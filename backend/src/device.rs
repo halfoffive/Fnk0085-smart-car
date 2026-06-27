@@ -15,9 +15,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, oneshot};
 
 /// 拍照完成回执
+/// - ok=true: 拍照成功，path 为 SD 上的 JPEG 路径
+/// - ok=false: 设备侧失败（DeviceEvent::Error 触发），path 为空
 #[derive(Debug, Clone)]
 pub struct PhotoResult {
     pub path: String,
+    pub ok: bool,
 }
 
 /// 单设备运行态

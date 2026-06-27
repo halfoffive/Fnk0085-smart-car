@@ -60,12 +60,11 @@
  * 全局配置常量（const，编译期确定）
  * ================================================================= */
 
-// L298N 引脚（与 task 描述一致；与摄像头 SIOD/SIOC/VSYNC/HREF 存在硬件冲突，
-// 见 camera_pins.h 顶部说明）
-const int PIN_IN1 = 4;
-const int PIN_IN2 = 5;
-const int PIN_IN3 = 6;
-const int PIN_IN4 = 7;
+// L298N 引脚（避开摄像头 GPIO 4-18 与 SD_MMC 38-40，电机方向引脚移到 41/42/47/21）
+const int PIN_IN1 = 41;
+const int PIN_IN2 = 42;
+const int PIN_IN3 = 47;
+const int PIN_IN4 = 21;
 const int PIN_ENA = 1;   // 左电机 PWM
 const int PIN_ENB = 2;   // 右电机 PWM
 
@@ -74,9 +73,9 @@ const uint32_t LEDC_FREQ_HZ   = 1000;   // 1 kHz
 const uint8_t  LEDC_RES_BITS  = 8;      // 8 位分辨率
 const uint16_t PWM_MAX         = 255;   // 8 位 PWM 上限
 
-// 编码器引脚（LEFT_ENC=GPIO14，RIGHT_ENC=GPIO15；GPIO15 与摄像头 XCLK 冲突）
+// 编码器引脚（LEFT_ENC=GPIO14，RIGHT_ENC=GPIO3 strapping pin，boot 后 INPUT_PULLUP 安全）
 const int      PIN_ENC_LEFT   = 14;
-const int      PIN_ENC_RIGHT  = 15;
+const int      PIN_ENC_RIGHT  = 3;
 const uint32_t PULSES_PER_REV = 20;     // 编码器每圈脉冲数（按实际轮调整）
 const uint32_t ENC_SAMPLE_MS  = 100;    // 100ms 采样一次 → RPM 计算窗口
 

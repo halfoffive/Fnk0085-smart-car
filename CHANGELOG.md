@@ -115,6 +115,8 @@
   - `mbedtls_sha256_starts_ret` / `_update_ret` / `_finish_ret` 已合并为无后缀版本
   - `volatile ++` 触发 `-Wvolatile` → 改为显式 `x = x + 1`
   - 结构体聚合初始化缺少成员告警 → 显式列出全部字段
+- 固件：重映射 5 个冲突 GPIO（PIN_IN1=4→41, PIN_IN2=5→42, PIN_IN3=6→47, PIN_IN4=7→21, PIN_ENC_RIGHT=15→3），消除与摄像头 SCCB（SIOD/SIOC）/ VSYNC / HREF / XCLK 物理冲突，修复"无视频画面 + 拍照 SCCB_Write Failed ret=259"症状
+- 后端：`PhotoResult` 新增 `ok: bool` 字段；`DeviceEvent::Error` 分支调 `complete_photo(ok=false)` 立即释放挂起的 photo oneshot；`/api/photo/{id}` 在设备侧失败时返回 HTTP 502 Bad Gateway（区别于超时 504）
 
 ### Security
 - 设备侧 HTTPS 客户端使用 `WiFiClientSecure::setInsecure()` 信任后端自签证书（开发期方案）；生产部署应换为 mTLS 或 CA pinning（`setCACert()`）

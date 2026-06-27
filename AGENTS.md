@@ -75,7 +75,7 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - 后端 HTTP/2 h2c 支持情况：`actix-http` 启用 `http2` feature + `tcp_auto_h2c()` 协商明文 HTTP/2，nginx 反代或 h2c 客户端可用 HTTP/2；固件受 ESP32 Arduino `HTTPClient` 库限制仍走 HTTP/1.1；HTTP/3 (QUIC) 在 ESP32 上不可行
 - **若前端设备名为空且视频一直 loading**：先检查 `GET /api/devices` 响应字段是否为 camelCase（`deviceId`/`lastSeenMs`）；排查工具可用浏览器 devtools Network 查看响应字段，若仍为 `device_id`/`last_seen_ms` 说明后端序列化未生效
 - **若 S3 串口按 WASD 无反应**：先确认串口已输出 `[CTRL] direction=... pwm=... durationMs=...`；若无此日志，则指令未到达固件，需依次检查前端 deviceId 是否合法、后端 `/api/device/{id}/poll` 队列是否正常、固件 `pollTask` 是否在线
-- **拍照时串口报 `SCCB_Write Failed addr:0x30 ... ret:259` 且后端 504**：根因是 `videoTask` 与 `handlePhoto` 并发访问 OV2640 SCCB 总线。已修复：`photoMux` 二进制信号量在 `handlePhoto()` 进入时独占、退出时释放；`videoTask()` 采集前非阻塞尝试获取信号量，失败则跳过本帧；拍照前后各增加 300ms/200ms/100ms 延时稳定传感器；捕获/SD 失败时立即 `sendError(5002, ...)` 上报，避免后端 `POST /api/photo/{id}` 挂起超时。
+- **拍照时串口报 `SCCB_Write Failed addr:0x30 ... ret:259` 且后端 504**：根因是 GPIO 引脚冲突（PIN_IN1=4 与 SIOD 冲突、PIN_IN2=5 与 SIOC 冲突、PIN_IN3=6 与 VSYNC 冲突、PIN_IN4=7 与 HREF 冲突、PIN_ENC_RIGHT=15 与 XCLK 冲突），`motorInit()` / `encoderInit()` 在 `cameraInit()` 之后执行把摄像头 GPIO 全部重路由掉。已修复：电机方向引脚重映射到 41/42/47/21，右编码器移到 GPIO 3（strapping pin，boot 后 INPUT_PULLUP 安全）。`photoMux` 二进制信号量仍保留作为 videoTask / handlePhoto 的并发保护（次要但合理）。拍照失败时设备上报 `DeviceEvent::Error`，后端立即触发 photo oneshot 释放，`/api/photo/{id}` 返回 HTTP 502 而非等满 8s 返回 504。
 - **前端视频画面无流**：检查串口是否周期打印 `[VIDEO] frames ok=%u fail=%u` 与 `[FRAME] POST failed ...`；`ok=0 fail=0` 表示 videoTask 未拿到帧（可能 photoInProgress 卡住或摄像头初始化失败）；`fail` 持续增加则检查后端 `/api/device/{id}/frame` 是否返回 401/404/413 或 scheme 是否匹配。
 
 ## 协议改动清单

@@ -158,7 +158,10 @@ pub async fn handle_event(
             );
         }
         DeviceEvent::PhotoDone { path, uptime_ms: _ } => {
-            let ok = entry.complete_photo(PhotoResult { path: path.clone() });
+            let ok = entry.complete_photo(PhotoResult {
+                path: path.clone(),
+                ok: true,
+            });
             if ok {
                 log::info!("设备 {device_id} 拍照完成: {path}");
             } else {
@@ -177,6 +180,14 @@ pub async fn handle_event(
         }
         DeviceEvent::Error { code, message } => {
             log::warn!("设备 {device_id} 错误 code={code} message={message}");
+            // 设备侧失败：立即释放可能挂起的 photo oneshot，避免 /api/photo/{id} 等满 8s 才返回 504
+            let photo_released = entry.complete_photo(PhotoResult {
+                path: String::new(),
+                ok: false,
+            });
+            if photo_released {
+                log::info!("设备 {device_id} 拍照因 error 事件失败，已释放挂起的 photo 等待");
+            }
         }
     }
     entry.touch(None, now_ms());

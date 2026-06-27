@@ -125,7 +125,7 @@ bun run dev        # 开发模式
 | `/api/devices` | GET | 无 | 设备列表，返回 `[{deviceId, online, lastSeenMs}]` |
 | `/api/telemetry/{deviceId}` | GET | 无 | 设备左右轮速，返回 `{"leftRpm":..., "rightRpm":...}`；设备不在线返回 404 |
 | `/api/control/{deviceId}` | POST | 无 | 下发控制指令 `{direction, pwm}` |
-| `/api/photo/{deviceId}` | POST | 无 | 触发拍照，返回 `{path}` 或 504 超时 |
+| `/api/photo/{deviceId}` | POST | 无 | 触发拍照，返回 `{path}`；设备侧失败返回 502 Bad Gateway（error 事件触发），超时返回 504 |
 | `/api/stream/{deviceId}` | GET | 无 | `multipart/x-mixed-replace` 视频流 |
 | `/api/pwm_cache/{deviceId}` | GET/POST | 无 | 查询/设置 PWM 缓存开关 |
 | `/api/device/{deviceId}/register` | POST | body `token` | 设备控制通道注册 |
