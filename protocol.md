@@ -1,44 +1,50 @@
-# Fnk0085 智能小车通信协议 v1
+# Fnk0085 智能小车通信协议 v3
 
 > 开发参考协议文档（非用户文档）。锁定设备 ↔ 后端 ↔ 前端的通信契约。
 > 任何字段变更必须同步更新本文档与三方实现（firmware/.ino、backend/、frontend/）。
 
 ---
 
-## 1. UDP 视频分包包格式（设备 → 后端）
+## 1. 视频帧上传（设备 → 后端）
 
-视频流走 UDP + 应用层 AES-128-GCM AEAD（Arduino-ESP32 无高层 DTLS API，用 AEAD 等价实现 DTLS 安全属性），端口由后端配置决定（默认 7000）。控制指令不走此通道，见第 2 节 HTTPS。
-所有多字节整数采用**小端序（little-endian）**。
+视频流走 HTTP/HTTPS（HTTP/1.1 keep-alive），与控制平面共用同一端口（默认 8080）。设备端按 `server` 配置字段 scheme 选择 `WiFiClient`（明文，直连后端）或 `WiFiClientSecure::setInsecure()`（信任所有证书，经 nginx 反代）。后端明文 HTTP（启 `http2` feature 支持 h2c 协商，HTTP/1.1 回退）；对外由 nginx 反代终止 TLS（HTTP/2 over TLS + HTTP/3 over QUIC）。控制指令与事件走第 2 节端点。
 
-### 1.1 字节布局
+### 1.1 端点
 
-| 偏移 | 字段 | 长度 | 类型 | 说明 |
-|------|------|------|------|------|
-| 0 | magic | 2B | uint8[2] | 固定 `0xF1 0xD0`，用于包识别 |
-| 2 | version | 1B | uint8 | 协议版本，初始 `1` |
-| 3 | deviceIdLen | 1B | uint8 | deviceId 字符串长度 N |
-| 4 | deviceId | N B | UTF-8 | 设备 ID，如 `ESP32S3_<chipId>_<MAC>` |
-| 4+N | uptimeMs | 8B | uint64 LE | 设备系统运行时间（毫秒） |
-| 12+N | frameSeq | 4B | uint32 LE | 帧序号（同一帧的所有 8 个分包相同） |
-| 16+N | partIdx | 1B | uint8 | `0..7`，当前子包索引 |
-| 17+N | partTotal | 1B | uint8 | 固定 `8` |
-| 18+N | row | 1B | uint8 | `0..1`（2 行网格） |
-| 19+N | col | 1B | uint8 | `0..3`（4 列网格） |
-| 20+N | payloadLen | 4B | uint32 LE | 本子包 JPEG 切片字节长度 M |
-| 24+N | payload | M B | bytes | JPEG 切片字节 |
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| POST | `/api/device/{deviceId}/frame` | 单帧 JPEG 上传，body 为原始 JPEG 二进制 |
 
-### 1.2 切片语义说明
+### 1.2 请求头
 
-- 整帧 QVGA 320×240，按 2 行 × 4 列网格概念切片，每子包对应约 160×60 像素区域。
-- **实际实现**：将整帧 JPEG 字节流按字节均分为 8 段，`row`/`col` 仅作为位置语义标记用于诊断与乱序检测，**不参与实际切分逻辑**。
-- `payloadLen` 为本段实际字节数（最后一段可能小于平均长度）。
-- 后端重组时按 `partIdx` 顺序拼接即可还原完整 JPEG。
+| 头 | 必填 | 说明 |
+|------|------|------|
+| `Authorization` | 是 | `Bearer <token>`，与 `deviceId` 绑定 |
+| `Content-Type` | 是 | 固定 `image/jpeg` |
+| `X-Device-Uptime-Ms` | 是 | 设备系统运行时间（毫秒），用于前端延时计算 |
+
+### 1.3 请求 Body
+
+原始 JPEG 二进制（QVGA 320×240，`jpeg_quality=5`，单帧约 15-30 KB）。**无分包、无 magic、无 framing 头**，HTTP/1.1 keep-alive 复用客户端连接（`WiFiClient` 或 `WiFiClientSecure`）。
+
+### 1.4 响应
+
+| 状态码 | 含义 |
+|------|------|
+| 204 No Content | 成功（无 body） |
+| 401 Unauthorized | token 错误 |
+| 404 Not Found | 设备未知（未注册） |
+| 413 Payload Too Large | body 超出后端单帧上限 |
+
+### 1.5 失败策略
+
+POST 失败（连接异常或非 2xx）时，固件**直接丢弃该帧不重试**，`videoTask` 立即进入下一帧采集，保证 10fps 节奏不塌。失败计数每 10 帧汇总一次写入日志。`pollTask` 控制通道不受影响。
 
 ---
 
-## 2. HTTPS 设备控制通道（设备 ↔ 后端）
+## 2. 设备控制通道（设备 ↔ 后端）
 
-控制平面走 HTTPS（HTTP/2 over TLS，同端口 8080）。设备端使用 `WiFiClientSecure::setInsecure()` 信任后端自签证书（开发期方案；生产应换 mTLS / CA pinning）。
+控制平面走 HTTP/HTTPS（HTTP/1.1 或 HTTP/2 h2c，同端口 8080）。设备端按 `server` 配置字段 scheme 选择 `WiFiClient`（明文，直连后端）或 `WiFiClientSecure::setInsecure()`（信任所有证书，经 nginx 反代）。
 
 ### 2.1 端点
 
@@ -191,10 +197,18 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 
 ### 3.4 GET /api/stream/{deviceId}
 
-SSE 或 chunked transfer。每条消息为一帧完整 JPEG：
+视频流走 `multipart/x-mixed-replace; boundary="fnk0085frame"`（HTTP/1.1 chunked），与后端 `handlers/stream.rs` 实现一致。每个 part 为一帧完整 JPEG：
 
-- Content-Type: `image/jpeg`（每帧）
-- 响应头 `X-Latency-Ms: <int>`：本帧端到端延迟（ms）
+```
+--fnk0085frame\r\n
+Content-Type: image/jpeg\r\n
+X-Latency-Ms: <int>\r\n
+\r\n
+<JPEG bytes>\r\n
+```
+
+- `X-Latency-Ms`：本帧端到端延迟（ms），由后端计算 `now - deviceUptimeMs` 后透传至前端
+- 浏览器通过 `fetch` + `ReadableStream` 或 `<img>` 自动刷新消费
 
 ### 3.5 GET /api/pwm_cache/{deviceId}
 
@@ -276,16 +290,21 @@ ERR|<reason>\n
 
 ## 5. 鉴权
 
-### 5.1 设备 → 后端 HTTPS
+### 5.1 设备 → 后端 HTTP/HTTPS
 
-- TLS 自签证书；设备端通过 `WiFiClientSecure::setInsecure()` 信任（开发期方案，跳过证书校验）
-- 生产部署应改为 `setCACert(root_ca)` 或 mTLS 客户端证书（由后端 `client_ca` 配置项启用）
+- 后端走明文 HTTP（默认 8080，启 `http2` feature 支持 h2c 协商，HTTP/1.1 回退）；TLS 由 nginx 反代统一处理（HTTP/2 over TLS + HTTP/3 over QUIC），后端不感知 TLS
+- 设备端按 `server` 配置字段 scheme 选择客户端：
+  - `http://` → `WiFiClient`（明文，直连后端内网端口，延时最低）
+  - `https://` → `WiFiClientSecure` + `setInsecure()`（信任所有证书，开发期方案；生产由 nginx 提供合法证书，固件无需感知 CA 轮换）
+  - 兼容无 scheme 老配置：默认走 HTTPS
+- 固件 `WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, IPAddress(119,29,29,29), IPAddress(8,8,8,8))` 在 `WiFi.begin()` 前调用（5 参数版：DHCP 自动获取 IP/Gateway/Subnet，仅显式指定 DNS1+DNS2）。`119.29.29.29` 是 DNSPod 国内 DNS，`8.8.8.8` 是 Google 备份
 - `Authorization: Bearer <token>` 头校验，`token` 与 `deviceId` 绑定
 - `register` 端点用 body 中的 token 校验（首帧尚未建立 session）
+- SNTP 时间同步（`configTime(0, "pool.ntp.org", "time.google.com")`，5s 超时失败仅告警）作为日志辅助；`setInsecure()` 跳过证书时间校验，SNTP 失败不影响 HTTPS 握手
 
 ### 5.2 前端 → 后端 HTTP
 
-- 浏览器走 HTTPS（HTTP/2 over TLS，同端口 8080），自签证书需用户在浏览器侧信任
+- 浏览器走 HTTPS（nginx 反代，HTTP/2 over TLS + HTTP/3 over QUIC），nginx 提供合法证书，无需浏览器侧手动信任
 - 可选 Bearer token（如配置启用）
 - 由后端配置决定是否强制鉴权
 
@@ -293,6 +312,7 @@ ERR|<reason>\n
 
 ## 附录：版本与维护
 
-- 协议版本：`1`（`version` 字段初始值）
+- 协议版本：`3`（移除后端 TLS + 固件 HTTP/HTTPS 双模式 + DNS 119.29.29.29 后递增）
 - 任何字段变更需同步更新：`firmware/.ino`、`backend/`、`frontend/`、本文档
-- 保留 magic `0xF1 0xD0` 用于未来版本兼容性识别
+- 视频帧走 POST（`/api/device/{id}/frame`），body 原始 JPEG，header `Authorization` / `Content-Type` / `X-Device-Uptime-Ms`
+- HTTP/HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步

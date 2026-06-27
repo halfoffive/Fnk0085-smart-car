@@ -1,8 +1,60 @@
 # Changelog
 
-本项目版本号统一：固件 / 后端 / 前端共享 `0.1.0`。前端 PWA 缓存键带版本号，版本变更时自动清理旧缓存。
+本项目版本号统一：固件 / 后端 / 前端共享 `0.3.0`。前端 PWA 缓存键带版本号，版本变更时自动清理旧缓存。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+## [0.3.0] - 2026-06-27
+
+### BREAKING
+- 后端移除 rustls 0.23 / rcgen / rustls-pemfile / tokio-rustls 依赖与 `rustls-0_23` feature；改为明文 HTTP（保留 `http2` feature 支持 h2c 协商），TLS + HTTP/3 由 nginx 反代统一处理
+- 后端移除 `GET /api/ca_cert` 端点与 `handlers/ca_cert.rs`；`AuthConfig` 移除 `tls_cert` / `tls_key` / `client_ca` / `ca_cert` 字段；`AppState` 移除 `ca_cert_path` 字段
+- 固件删除 `firmware/Fnk0085-smart-car/ca_cert.h`；`setCACert(root_ca_pem)` 改回 `setInsecure()` 信任所有证书（开发期方案，生产由 nginx 提供合法证书）
+
+### Added
+- 固件 HTTP/HTTPS 双模式：根据 `server` 配置字段 scheme（`http://` 或 `https://`）选择 `WiFiClient`（明文）或 `WiFiClientSecure`（setInsecure），`buildUrl` 与 `httpsPost` / `httpsGet` / `httpsPostFrame` 全部 scheme-aware
+- 固件 DNS 显式配置：`WiFi.config()` 在 `WiFi.begin()` 前设置 DNS1=`119.29.29.29`（DNSPod）+ DNS2=`8.8.8.8`（Google），DHCP 自动获取 IP/Gateway/Subnet
+- 固件 `stripServerScheme()` helper：解析 `server` 字段的 `http://` / `https://` 前缀，剥离后存 `backendHost` + `backendPort`，兼容无 scheme 老配置（默认走 HTTPS）
+- 后端 `HttpService::build().finish(handler).tcp_auto_h2c()` 明文 HTTP/2（h2c）协商，回退 HTTP/1.1
+
+### Changed
+- `protocol.md` §1 / §2 / §5 更新为「后端明文 HTTP + nginx TLS 终止 + 固件 setInsecure 双模式」；移除 §3.7 CA 端点章节；附录协议版本号 2→3
+- `AGENTS.md` 仓库结构、配置与密钥、协议改动清单更新：移除 CA 烧写流程，新增 nginx 反代 + DNS 119.29.29.29 说明
+- `README.md` 架构图与部署流程更新：移除 CA 抓取步骤，新增 nginx 反代部署说明
+
+### Removed
+- 后端 `backend/src/handlers/ca_cert.rs` 整文件删除
+- 后端 `Cargo.toml` 移除 `rustls` / `rustls-pemfile` / `tokio-rustls` / `rcgen` / `time` 依赖
+- 后端 `config.rs` 移除 `gen_self_signed_pair` / `load_or_generate_tls_materials` / `TlsMaterials` 类型与相关测试
+- 固件 `firmware/Fnk0085-smart-car/ca_cert.h` 文件删除（含 PROGMEM `root_ca_pem[]` 常量）
+
+### Security
+- 设备侧 HTTPS 客户端改回 `WiFiClientSecure::setInsecure()` 信任所有证书（开发期方案；生产由 nginx 提供合法证书，固件无需感知 CA 轮换）
+- 后端明文 HTTP 仅监听内网端口，对外由 nginx 终止 TLS（HTTP/2 over TLS + HTTP/3 over QUIC），固件经 nginx 转发或直连后端均可
+
+## [0.2.0] - 2026-06-27
+
+### BREAKING
+- 弃用 UDP+AEAD 视频通道，全面转向 HTTPS：视频帧走 `POST /api/device/{id}/frame`，body 原始 JPEG
+- 设备端 TLS 从 `setInsecure()` 改为 `setCACert()` CA 固定，需烧写前将后端 `certs/ca.crt` 拷贝至 `firmware/Fnk0085-smart-car/ca_cert.h`
+
+### Added
+- 后端新增 `POST /api/device/{id}/frame` 端点接收设备视频帧
+- 后端新增 `GET /api/ca_cert` 端点暴露 CA PEM
+- 固件新增 SNTP 时间同步（`configTime` + 5s 超时 + 证书宽限期 1970-2099 兜底）
+- 固件新增 `httpsPostFrame` 与 FreeRTOS Mutex 互斥保护共享 `httpsClient`
+- 固件 `ca_cert.h` 编译期内嵌 CA PEM
+
+### Changed
+- 固件摄像头 `jpeg_quality` 10→5（更高图像质量）、`fb_count` 1→2（双缓冲）
+- 后端证书有效期改为 1970-01-01 至 2099-12-31（兜底 SNTP 失败场景）
+- `protocol.md` §1 重写为 HTTPS 视频帧上传；§3.4 描述对齐 multipart/x-mixed-replace 实现；§5 鉴权改为 CA pinning + Bearer token
+
+### Removed
+- 后端 `udp_listener.rs` 与 `crypto.rs` 整文件删除
+- 后端 `AppState.key`（AeadKey）字段删除；`Cargo.toml` 移除 `aes-gcm`/`sha2` 依赖
+- 固件 UDP 发送栈（`udpSend`、`aesKey`、`deriveAesKey`、`aeadEncrypt`、`sendVideoFrame`）、`BACKEND_UDP_PORT` 常量、mbedtls AEAD 头文件
+- `protocol.md` 原 §1 UDP 分包章节
 
 ## [Unreleased]
 

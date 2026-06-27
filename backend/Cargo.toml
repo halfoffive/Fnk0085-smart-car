@@ -1,6 +1,6 @@
 [package]
 name = "fnk0085-smart-car-backend"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "Fnk0085 智能小车后端：基于 actix-http v3.13.1 的低内存多设备转发服务"
 license = "MIT"
@@ -11,28 +11,22 @@ path = "src/main.rs"
 
 [dependencies]
 # 直接基于 actix-http，避免引入 actix-web 全套以控制内存
-# http2 必须启用：actix-http 的 rustls acceptor 会强制把 h2 注入 ALPN 列表，
-# Chrome 等浏览器会协商到 h2，未启用 http2 feature 时会 panic。
-actix-http = { version = "3.13.1", features = ["rustls-0_23", "compress-gzip", "http2"] }
+# http2 必须启用：保留 h2c（明文 HTTP/2）协商能力，供 nginx 反代或客户端直接使用。
+# TLS 由 nginx 反代统一处理，后端只跑明文 HTTP。
+actix-http = { version = "3.13.1", features = ["compress-gzip", "http2"] }
 actix-server = "2"
 actix-service = "2"
 actix-rt = "2"
-# actix-tls 提供 rustls 0.23 的 ServerBuilderExt::bind_rustls_0_23
-actix-tls = { version = "3", features = ["rustls-0_23"] }
+# actix-tls：保留依赖（features 中已移除 rustls-0_23），供后续扩展或 accept 模块复用。
+actix-tls = { version = "3" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 include_dir = "0.7"
-aes-gcm = "0.10"
-sha2 = "0.10"
 bytes = "1"
 flate2 = "1"
 log = "0.4"
 env_logger = "0.11"
-rcgen = "0.13"
-rustls = "0.23"
-rustls-pemfile = "2"
-tokio-rustls = "0.26"
 anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"

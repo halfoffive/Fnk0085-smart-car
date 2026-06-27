@@ -177,7 +177,7 @@ pub async fn handle_event(
 }
 
 /// 校验 Authorization: Bearer <token> 头
-fn check_auth(req: &Request, expected: &str) -> bool {
+pub(crate) fn check_auth(req: &Request, expected: &str) -> bool {
     let header = match req
         .head()
         .headers

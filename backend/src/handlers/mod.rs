@@ -7,6 +7,7 @@
 pub mod control;
 pub mod device_api;
 pub mod devices;
+pub mod frame;
 pub mod photo;
 pub mod pwm_cache;
 pub mod stream;
@@ -72,6 +73,9 @@ async fn try_route_api(
                 return Some(
                     device_api::handle_event(state, device_id, &mut req, accept_gzip).await,
                 );
+            }
+            Some("frame") if method == Method::POST => {
+                return Some(frame::handle_frame(state, device_id, &mut req, accept_gzip).await);
             }
             _ => return Some(bad_request("unknown device action", accept_gzip)),
         }

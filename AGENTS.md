@@ -6,8 +6,8 @@
 
 三端一体单仓，**版本号统一**（固件 / 后端 / 前端 / PWA 缓存键共用 `package.json` 的 `version`，改版本时 PWA 会自动清旧缓存）：
 
-- `firmware/Fnk0085-smart-car/` — ESP32-S3 Arduino `.ino`（摄像头 + 电机 + 编码器 + PID + Web Serial 配网）。**控制平面走 HTTPS 长轮询**（`WiFiClientSecure::setInsecure()` 信任自签证书；FreeRTOS `pollTask` 拉指令，`cmdQueue` 投递给 `loop` 派发），视频平面走 UDP+AEAD（保留 `udpSend`，移除了 `udpRecv`）。**SD_MMC 必须先 `setPins(39, 38, 40)` 再 `begin("/sdcard", true, true, SDMMC_FREQ_DEFAULT, 5)`**（5 参数版），否则 ESP32-S3 默认引脚挂载失败。
-- `backend/` — Rust + actix-http v3.13.1（**启用 `http2` feature**，否则 Chrome 协商 h2 后 actix-http 会 panic；ALPN 由 actix-http 自动注入 `[h2, http/1.1]`，不要手动设 `alpn_protocols`）。**设备控制通道为 HTTPS 长轮询**：每设备 `mpsc::channel(16)` + `AsyncMutex<Receiver>`，`/api/device/{id}/register|poll|event`；UDP 监听仅处理视频流。`include_dir!` 编译期内嵌 `../frontend/dist`
+- `firmware/Fnk0085-smart-car/` — ESP32-S3 Arduino `.ino`（摄像头 + 电机 + 编码器 + PID + Web Serial 配网）。**控制平面走 HTTP/HTTPS 长轮询**（按 `server` scheme 选择 `WiFiClient` 或 `WiFiClientSecure::setInsecure()`；FreeRTOS `pollTask` 拉指令，`cmdQueue` 投递给 `loop` 派发）；视频帧通过 POST `/api/device/{id}/frame` 上传（`httpsPostFrame`，scheme-aware）；FreeRTOS Mutex 保护共享客户端；`WiFi.config()` 在 `WiFi.begin()` 前设 DNS `119.29.29.29` + `8.8.8.8`。**SD_MMC 必须先 `setPins(39, 38, 40)` 再 `begin("/sdcard", true, true, SDMMC_FREQ_DEFAULT, 5)`**（5 参数版），否则 ESP32-S3 默认引脚挂载失败。
+- `backend/` — Rust + actix-http v3.13.1（**启用 `http2` feature 用于 h2c 协商**，明文 HTTP，回退 HTTP/1.1；ALPN / TLS 由 nginx 反代统一处理）。**设备控制通道为 HTTP/HTTPS 长轮询**：每设备 `mpsc::channel(16)` + `AsyncMutex<Receiver>`，`/api/device/{id}/register|poll|event`；设备视频帧入口为 `POST /api/device/{id}/frame`。`include_dir!` 编译期内嵌 `../frontend/dist`
 - `frontend/` — Vite 8.1.0 + Vue 3.5.9 + TailwindCSS 4.3.1，包管理器用 **bun**（不再用 npm）。PWA 用 `injectManifest` + 自定义 `src/sw.ts`（**不要改回 `generateSW`**，曾经在 Vite 8 下因 workbox shim 异步加载导致 install handler 注册晚于 install 事件，离线白屏）
 - `protocol.md` — 设备↔后端↔前端的通信契约，**任何字段变更必须同步改三端实现 + 本文档**
 
@@ -47,17 +47,23 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 
 ## 配置与密钥
 
-- `*.jsonc`、`*.crt`、`*.key`、`*.pem` 均 gitignore（含 token 与证书路径）。**不要提交运行时生成的 config / certs**。
-- 默认后端监听 HTTPS 8080（HTTP/2 over TLS）、UDP 7000（仅视频）；token 默认 `change-me-please`，部署前务必修改。
-- **设备侧 HTTPS**：`WiFiClientSecure::setInsecure()` 跳过证书校验（开发期方案，**生产应换 `setCACert()` 或 mTLS**）。设备首帧走 `POST /api/device/{id}/register`（body 携带 token），其后所有端点带 `Authorization: Bearer <token>` 头。
-- UDP 视频走 AES-128-GCM AEAD（Arduino-ESP32 无 DTLS 高层 API，用 AEAD 等价替代）；HTTPS 走 rustls 0.23，支持 mTLS（`client_ca` 设非 null 即启用，浏览器侧启用客户端证书）。
-- HTTP 协议版本：HTTP/2 over TLS（同端口 8080），HTTP/3 暂不实现（actix-http 不支持，后期由 nginx 反代）。
+- `*.jsonc` 均 gitignore（含 token）。**不要提交运行时生成的 config**。后端不再生成 `certs/`（TLS 由 nginx 反代处理，无内置证书）。
+- 默认后端监听明文 HTTP 8080（h2c 协商 HTTP/2，回退 HTTP/1.1）；token 默认 `change-me-please`，部署前务必修改。
+- **后端对外暴露**：仅监听内网端口，对外由 nginx 反代终止 TLS（HTTP/2 over TLS + HTTP/3 over QUIC），反代到 `127.0.0.1:8080`。nginx 配置示例见 [README.md](README.md) §2。
+- **设备侧 HTTP/HTTPS 双模式**：根据 `server` 配置字段 scheme（`http://` 或 `https://`）选择客户端：
+  - `http://` → `WiFiClient`（明文，直连后端内网端口，延时最低）
+  - `https://` → `WiFiClientSecure` + `setInsecure()`（信任所有证书，开发期方案；生产由 nginx 提供合法证书，固件无需感知 CA 轮换）
+  - 兼容无 scheme 老配置：默认走 HTTPS
+- **固件 DNS**：`WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, IPAddress(119,29,29,29), IPAddress(8,8,8,8))` 在 `WiFi.begin()` 前调用（5 参数版：DHCP 自动获取 IP/Gateway/Subnet，仅显式指定 DNS1+DNS2）。`119.29.29.29` 是 DNSPod 国内 DNS，`8.8.8.8` 是 Google 备份。
+- 设备首帧走 `POST /api/device/{id}/register`（body 携带 token），其后所有端点带 `Authorization: Bearer <token>` 头。视频帧 POST body 为原始 JPEG（`Content-Type: image/jpeg`，header 另带 `X-Device-Uptime-Ms`）。
+- SNTP 时间同步（`configTime(0, "pool.ntp.org", "time.google.com")`，5s 超时失败仅告警）保留作为日志辅助；`setInsecure()` 跳过证书时间校验，SNTP 失败不影响 HTTPS 握手。
+- HTTP 协议版本：后端单端口明文 HTTP/2（h2c），HTTP/3 由 nginx 反代提供（actix-http 不支持 HTTP/3）。
 - 固件串口配网等待期发送单行 `CONFIG\n`（不带字段）可查询 NVS 中已存的 ssid / password 长度 / server / token；正常配网行格式见 `protocol.md` 第 4 节。
-- 前端 ConfigDialog 提交前对 `server` 字段做合规校验（hostname / IPv4 / `[IPv6]` + `:port`，端口范围 1-65535），非法时阻止提交。
+- 前端 ConfigDialog 提交前对 `server` 字段做合规校验（须带 `http://` 或 `https://` scheme + hostname / IPv4 / `[IPv6]` + `:port`，端口范围 1-65535），非法时阻止提交。
 
 ## 协议改动清单
 
-改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler（`device_api.rs` / `udp_listener.rs`）、`frontend/src/**`、`protocol.md`。多字节整数小端序。UDP 分包固定 8 段、magic `0xF1 0xD0`、version 起 `1`。HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步。
+改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler（`device_api.rs` / `frame.rs`）、`frontend/src/**`、`protocol.md`。视频帧走 POST（`/api/device/{id}/frame`），body 原始 JPEG，header `Authorization` / `Content-Type` / `X-Device-Uptime-Ms`；协议版本 3。HTTP/HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步。
 
 ## 提交约定
 
