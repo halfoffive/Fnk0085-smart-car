@@ -142,3 +142,17 @@ export async function getProvisioning(signal?: AbortSignal): Promise<{ server: s
   });
   return handle<{ server: string; token: string }>(res);
 }
+
+/** POST /api/auth/login — 校验前端访问密码，成功返回 true，失败（401 或网络错误）返回 false */
+export async function postLogin(password: string): Promise<boolean> {
+  try {
+    const res = await fetch(url('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

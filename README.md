@@ -121,11 +121,12 @@ bun run dev        # 开发模式
 | 端点 | 方法 | 鉴权 | 说明 |
 |------|------|------|------|
 | `/api/health` | GET | 无 | 健康探测，返回 `{"status":"ok","version":"0.3.1"}` |
+| `/api/auth/login` | POST | `{"password":"..."}` | 校验前端访问密码，成功 200 `{"ok":true}`，失败 401 `{"error":"invalid password"}` |
 | `/api/config` | GET | 无 | 配网信息，返回 `{"server":"host:port","token":"..."}` |
 | `/api/devices` | GET | 无 | 设备列表，返回 `[{deviceId, online, lastSeenMs}]` |
 | `/api/telemetry/{deviceId}` | GET | 无 | 设备左右轮速，返回 `{"leftRpm":..., "rightRpm":...}`；设备不在线返回 404 |
 | `/api/control/{deviceId}` | POST | 无 | 下发控制指令 `{direction, pwm}` |
-| `/api/photo/{deviceId}` | POST | 无 | 触发拍照，返回 `{path}` 或 504 超时 |
+| `/api/photo/{deviceId}` | POST | 无 | 触发拍照，返回 `{path}`；设备侧失败返回 502 Bad Gateway（error 事件触发），超时返回 504 |
 | `/api/stream/{deviceId}` | GET | 无 | `multipart/x-mixed-replace` 视频流 |
 | `/api/pwm_cache/{deviceId}` | GET/POST | 无 | 查询/设置 PWM 缓存开关 |
 | `/api/device/{deviceId}/register` | POST | body `token` | 设备控制通道注册 |

@@ -102,6 +102,8 @@
 - 固件串口新增 `CONFIG` 查询命令：单行 `CONFIG\n` 打印 NVS 中已存的 ssid / password 长度 / server / token，便于排查配网问题
 - 固件 setup / pollSerialConfig 全面增强日志：server 与 UDP 端口分别打印、token 明文打印、端口范围 1-65535 校验、CONFIG 行接收时回显
 - 前端 ConfigDialog 服务器地址校验：支持 hostname / IPv4 / `[IPv6]` + `:port`，端口范围 1-65535，非法时阻止提交并提示
+- 后端：新增 `POST /api/auth/login` 端点校验前端访问密码；配置文件 `auth.frontend_password` 字段（默认 `admin1234`，部署前修改）
+- 前端：访问前端需密码验证，登录态存 sessionStorage（关 tab 重登）；新增 LoginView 组件与退出登录按钮
 
 ### Fixed
 - 修复 ESP32-S3 SD 卡挂载失败的问题：原 `SD_MMC.begin("/sdcard", true)` 未调用 `setPins`，ESP32-S3 SD_MMC 走默认引脚导致初始化失败；参考 Freenove 示例补全
@@ -115,6 +117,8 @@
   - `mbedtls_sha256_starts_ret` / `_update_ret` / `_finish_ret` 已合并为无后缀版本
   - `volatile ++` 触发 `-Wvolatile` → 改为显式 `x = x + 1`
   - 结构体聚合初始化缺少成员告警 → 显式列出全部字段
+- 固件：重映射 5 个冲突 GPIO（PIN_IN1=4→41, PIN_IN2=5→42, PIN_IN3=6→47, PIN_IN4=7→21, PIN_ENC_RIGHT=15→3），消除与摄像头 SCCB（SIOD/SIOC）/ VSYNC / HREF / XCLK 物理冲突，修复"无视频画面 + 拍照 SCCB_Write Failed ret=259"症状
+- 后端：`PhotoResult` 新增 `ok: bool` 字段；`DeviceEvent::Error` 分支调 `complete_photo(ok=false)` 立即释放挂起的 photo oneshot；`/api/photo/{id}` 在设备侧失败时返回 HTTP 502 Bad Gateway（区别于超时 504）
 
 ### Security
 - 设备侧 HTTPS 客户端使用 `WiFiClientSecure::setInsecure()` 信任后端自签证书（开发期方案）；生产部署应换为 mTLS 或 CA pinning（`setCACert()`）

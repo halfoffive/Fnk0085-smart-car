@@ -55,11 +55,19 @@ pub async fn handle_post_photo(
 
     // 等待回执或超时
     match tokio::time::timeout(Duration::from_millis(PHOTO_TIMEOUT_MS), rx).await {
-        Ok(Ok(result)) => json_response(
+        Ok(Ok(result)) if result.ok => json_response(
             StatusCode::OK,
             &PhotoResponse { path: result.path },
             accept_gzip,
         ),
+        Ok(Ok(_)) => {
+            // 设备上报 error 事件触发的释放（ok=false）→ 设备侧失败，返回 502 区别于 504 超时
+            json_response(
+                StatusCode::BAD_GATEWAY,
+                &serde_json::json!({"error": "device capture failed"}),
+                accept_gzip,
+            )
+        }
         Ok(Err(_)) => {
             // oneshot 被 drop（不应发生，但防御性处理）
             photo_timeout(accept_gzip)
@@ -68,6 +76,7 @@ pub async fn handle_post_photo(
             // 超时：清理挂起的等待器
             entry.complete_photo(PhotoResult {
                 path: String::new(),
+                ok: false,
             });
             photo_timeout(accept_gzip)
         }
