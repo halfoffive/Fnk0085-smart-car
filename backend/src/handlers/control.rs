@@ -1,9 +1,8 @@
 //! POST /api/control/{deviceId} — 下发 WASD + PWM 控制指令。
 //!
-//! 流程：解析 JSON → 构造 DeviceCommand → AEAD 加密后通过 UDP 发送 → 立即返回 ok。
-//! 设备的 ack 通过单独的 UDP 事件回流，不在此 handler 等待。
+//! 流程：解析 JSON → 构造 DeviceCommand → 推入设备指令队列
+//! → 设备 HTTPS 长轮询拉取并执行 → ack 通过 POST /api/device/{id}/event 回流。
 
-use crate::device::OutboundCommand;
 use crate::handlers::{bad_request, device_not_found, json_response, AppResponse};
 use crate::protocol::DeviceCommand;
 use crate::state::AppState;
@@ -37,9 +36,10 @@ pub async fn handle_post_control(
     accept_gzip: bool,
 ) -> AppResponse {
     // 设备存在性
-    if state.registry.get(device_id).is_none() {
-        return device_not_found(device_id, accept_gzip);
-    }
+    let entry = match state.registry.get(device_id) {
+        Some(e) => e,
+        None => return device_not_found(device_id, accept_gzip),
+    };
     // 解析请求体
     let req: ControlRequest = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -56,7 +56,7 @@ pub async fn handle_post_control(
         return bad_request("pwm 必须在 0..255 范围内", accept_gzip);
     }
 
-    // 构造下行指令
+    // 构造下行指令并推入队列（设备下次 poll 时取走）
     let cmd = DeviceCommand::Control {
         direction: req.direction.clone(),
         pwm: req.pwm,
@@ -70,14 +70,8 @@ pub async fn handle_post_control(
             return bad_request("内部序列化错误", accept_gzip);
         }
     };
-
-    // 投递至 UDP 出站循环（不等待实际发送完成，纯异步）
-    let outbound = OutboundCommand {
-        device_id: device_id.to_string(),
-        json,
-    };
-    if state.cmd_sink.send(outbound).await.is_err() {
-        log::warn!("出站指令通道已关闭（设备 {device_id} 的 control 被丢弃）");
+    if entry.try_push_command(json).is_err() {
+        log::warn!("设备 {device_id} 指令队列已满，control 被丢弃");
     }
 
     json_response(StatusCode::OK, &ControlResponse { ok: true }, accept_gzip)

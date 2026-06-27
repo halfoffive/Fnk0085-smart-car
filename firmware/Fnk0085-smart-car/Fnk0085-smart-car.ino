@@ -10,13 +10,21 @@
  *   2.5  PWM 缓存表（命中跳过 PID）
  *   2.6  设备身份生成（chipId + MAC）
  *   2.7  UDP+AEAD 视频分包发送（UDP + AES-128-GCM，安全属性等同 DTLS）
- *   2.8  接收后端控制指令（WiFiUDP + ArduinoJson）
+ *   2.8  HTTPS 控制通道：长轮询拉取指令 + POST 上报事件（WiFiClientSecure）
  *   2.9  拍照（UXGA + quality=4 写 SD）
- *   2.10 Web Serial 配网（CONFIG|... 行协议 + NVS）
- *   2.11 WiFi STA + 后端 UDP 连接（启动发 register）
+ *   2.10 Web Serial 配网（CONFIG|... 行协议 + NVS，串口打印 token）
+ *   2.11 WiFi STA + HTTPS/UDP 双通道（HTTPS 控制平面 + UDP 视频平面）
  *   2.12 函数式风格 + 中文注释
  * -----------------------------------------------------------------
- * 关于 DTLS：
+ * 控制平面架构（HTTPS）：
+ *   - POST /api/device/{id}/register           注册（token 校验）
+ *   - GET  /api/device/{id}/poll?timeout=30    长轮询拉指令（返回 cmd JSON 或 Ping）
+ *   - POST /api/device/{id}/event              上报 photo_done/ack/error
+ *   - 信任自签证书：WiFiClientSecure::setInsecure()（生产部署应换 mTLS / CA pinning）
+ *   - pollTask（FreeRTOS，core 0）独占长轮询；指令通过 FreeRTOS 队列投递给 loop
+ *   - loop（core 1）消费队列 + 100ms 编码器/PID 周期 + WiFi 重连
+ *
+ * 视频平面架构（UDP+AEAD）：
  *   Arduino-ESP32 没有官方高层 DTLS API，本固件采用 UDP + 应用层 AES-128-GCM
  *   AEAD（AAD=包头，明文=JPEG 切片）等价实现 DTLS 的机密性 + 完整性 + 认证。
  *   密钥由 token 经 SHA-256 截前 16B 派生，nonce 每包随机 12B，tag 16B 附在
@@ -25,7 +33,9 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <WiFiUdp.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <SD_MMC.h>
@@ -80,8 +90,24 @@ const uint8_t  PROTO_MAGIC0     = 0xF1;
 const uint8_t  PROTO_MAGIC1     = 0xD0;
 const uint8_t  PROTO_VERSION    = 1;
 const uint8_t  PROTO_PART_TOTAL = 8;
-const uint16_t BACKEND_UDP_PORT = 7000;   // 后端默认端口
-const uint16_t LOCAL_UDP_PORT   = 7001;   // 本地监听端口（避免与发送端口冲突）
+
+// 后端默认端口（NVS 未指定 server 时用作回退；正常流程由 CONFIG|server=host:port 注入）
+const uint16_t BACKEND_HTTPS_PORT = 8080;  // HTTPS 控制通道端口
+const uint16_t BACKEND_UDP_PORT   = 7000;  // UDP 视频流端口（与后端 udp_addr 默认一致）
+
+// HTTPS 长轮询参数
+const uint16_t POLL_TIMEOUT_S    = 30;    // 长轮询秒数（后端上限 60）
+const uint16_t POLL_TASK_STACK   = 8192;  // pollTask 栈字节
+const uint16_t POLL_HTTP_TIMEOUT_MS = 35000; // HTTP 整体超时（略大于 poll 超时）
+const uint16_t POLL_BACKOFF_MS   = 1000; // poll 失败后重试间隔
+
+// 指令队列（pollTask → loop）容量
+const uint8_t  CMD_QUEUE_LEN     = 8;
+
+// SD_MMC 引脚（ESP32-S3 WROOM 板载硬连线，与 Freenove 示例一致，请勿修改）
+const uint8_t  SD_MMC_CLK_PIN   = 39;
+const uint8_t  SD_MMC_CMD_PIN   = 38;
+const uint8_t  SD_MMC_D0_PIN    = 40;
 
 // NVS 命名空间与键
 const char* NVS_NAMESPACE = "fnkcfg";
@@ -144,12 +170,14 @@ PidState  pidState        = { 0.0f, 0.0f, 0.0f, 0.0f, 0 };
 // 设备身份
 String deviceId;
 String deviceToken;
-String backendHost;
-uint16_t backendPort = BACKEND_UDP_PORT;
+String backendHost;        // HTTPS 控制通道 host
+uint16_t backendHttpsPort = BACKEND_HTTPS_PORT;  // HTTPS 端口
 
-// 网络
-WiFiUDP udpSend;   // 发送用
-WiFiUDP udpRecv;   // 接收用
+// 网络：UDP 仅用于视频流；HTTPS 用于控制通道
+WiFiUDP             udpSend;        // 视频流发送
+WiFiClientSecure    httpsClient;    // 控制通道（信任自签证书）
+QueueHandle_t        cmdQueue = NULL;  // pollTask → loop 的指令队列
+TaskHandle_t         pollTaskHandle = NULL;
 
 // AES-128-GCM 密钥（token 派生）
 uint8_t aesKey[16];
@@ -183,22 +211,31 @@ bool aeadEncrypt(const uint8_t* key, const uint8_t* nonce12,
                  const uint8_t* plain, size_t plainLen,
                  uint8_t* cipher, uint8_t tagOut[16]);
 void sendVideoFrame(uint8_t* jpegBuf, size_t jpegLen, uint32_t uptimeMs);
+
+// HTTPS 控制通道
+int  httpsPost(const String& path, const String& body, String& respOut);
+int  httpsGet(const String& path, String& respOut);
 void sendRegister();
 void sendPhotoDone(const String& path, uint32_t uptimeMs);
 void sendAck(int refSeq);
 void sendError(int code, const String& msg);
-void sendJson(const String& json);
+void pollTask(void* arg);
+void dispatchCommands();
+
+// 指令处理器
 void handleControl(const JsonDocument& doc);
 void handlePhoto();
 void handlePwmCache(const JsonDocument& doc);
 void handlePing(const JsonDocument& doc);
-void pollUdpRecv();
+
+// Web Serial 配网
 void pollSerialConfig();
 bool parseConfigLine(const String& line, String& ssid, String& password,
                      String& server, String& token);
 bool loadConfigFromNVS(String& ssid, String& password, String& server, String& token);
 void saveConfigToNVS(const String& ssid, const String& password,
                      const String& server, const String& token);
+void printStoredConfig();
 void videoTask(void* arg);
 
 /* =================================================================
@@ -562,7 +599,7 @@ void sendVideoFrame(uint8_t* jpegBuf, size_t jpegLen, uint32_t uptimeMs) {
     }
 
     // ---- 发送：包头 + nonce(12) + cipher(M) + tag(16) ----
-    udpSend.beginPacket(backendHost.c_str(), backendPort);
+    udpSend.beginPacket(backendHost.c_str(), BACKEND_UDP_PORT);
     udpSend.write(packetBuf, hdrLen);
     udpSend.write(nonce, 12);
     udpSend.write(cipherBuf, partLen);
@@ -574,52 +611,188 @@ void sendVideoFrame(uint8_t* jpegBuf, size_t jpegLen, uint32_t uptimeMs) {
 }
 
 /* =================================================================
- * 2.11 register 帧与事件回执（DTLS 上行）
+ * 2.8 HTTPS 控制通道：register / event / poll
+ * -----------------------------------------------------------------
+ * - WiFiClientSecure + setInsecure() 信任后端自签证书（开发期方案）。
+ *   生产部署应改为 mTLS 或 CA pinning（ setCACert() ）。
+ * - httpsPost/httpsGet 复用全局 httpsClient；返回 HTTP 状态码，<0 表示网络错误。
+ * - pollTask 独占长轮询；loop 仅消费队列。
  * ================================================================= */
-void sendJson(const String& json) {
-  udpSend.beginPacket(backendHost.c_str(), backendPort);
-  udpSend.print(json);
-  udpSend.endPacket();
+
+// 构造完整 HTTPS URL
+String buildUrl(const String& path) {
+  String url = "https://";
+  url += backendHost;
+  url += ":";
+  url += String(backendHttpsPort);
+  url += path;
+  return url;
 }
 
+// POST JSON 到指定 path；返回 HTTP 状态码（>=200），<0 为网络/协议错误
+int httpsPost(const String& path, const String& body, String& respOut) {
+  HTTPClient http;
+  String url = buildUrl(path);
+  if (!http.begin(httpsClient, url)) {
+    Serial.printf("[HTTPS] POST begin failed: %s\n", url.c_str());
+    return -1;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + deviceToken);
+  http.setTimeout(POLL_HTTP_TIMEOUT_MS);
+  int code = http.POST(body);
+  if (code > 0) respOut = http.getString();
+  http.end();
+  return code;
+}
+
+// GET 指定 path（长轮询）；返回 HTTP 状态码，<0 为网络/协议错误
+int httpsGet(const String& path, String& respOut) {
+  HTTPClient http;
+  String url = buildUrl(path);
+  if (!http.begin(httpsClient, url)) {
+    Serial.printf("[HTTPS] GET begin failed: %s\n", url.c_str());
+    return -1;
+  }
+  http.addHeader("Authorization", "Bearer " + deviceToken);
+  http.addHeader("Cache-Control", "no-store");
+  http.setTimeout(POLL_HTTP_TIMEOUT_MS);
+  int code = http.GET();
+  if (code > 0) respOut = http.getString();
+  http.end();
+  return code;
+}
+
+// POST /api/device/{id}/register —— body: {"token":"Bearer xxx"}
 void sendRegister() {
   JsonDocument doc;
-  doc["type"]     = "register";
-  doc["deviceId"] = deviceId;
-  doc["token"]    = "Bearer " + deviceToken;
-  String out;
-  serializeJson(doc, out);
-  sendJson(out);
-  Serial.printf("[NET] register sent, deviceId=%s\n", deviceId.c_str());
+  doc["token"] = "Bearer " + deviceToken;
+  String body;
+  serializeJson(doc, body);
+  String path = "/api/device/" + deviceId + "/register";
+  String resp;
+  int code = httpsPost(path, body, resp);
+  if (code == 200) {
+    Serial.printf("[NET] register ok, deviceId=%s\n", deviceId.c_str());
+  } else {
+    Serial.printf("[NET] register failed code=%d resp=%s\n", code, resp.c_str());
+  }
 }
 
+// POST /api/device/{id}/event —— body: {"type":"photo_done","path":...,"uptimeMs":...}
 void sendPhotoDone(const String& path, uint32_t uptimeMs) {
   JsonDocument doc;
-  doc["type"]      = "photo_done";
-  doc["path"]      = path;
-  doc["uptimeMs"]  = uptimeMs;
-  String out;
-  serializeJson(doc, out);
-  sendJson(out);
+  doc["type"]     = "photo_done";
+  doc["path"]     = path;
+  doc["uptimeMs"] = uptimeMs;
+  String body;
+  serializeJson(doc, body);
+  String url = "/api/device/" + deviceId + "/event";
+  String resp;
+  int code = httpsPost(url, body, resp);
+  if (code != 200) {
+    Serial.printf("[NET] photo_done failed code=%d\n", code);
+  }
 }
 
+// POST /api/device/{id}/event —— body: {"type":"ack","refSeq":N}
 void sendAck(int refSeq) {
   JsonDocument doc;
   doc["type"]   = "ack";
   doc["refSeq"] = refSeq;
-  String out;
-  serializeJson(doc, out);
-  sendJson(out);
+  String body;
+  serializeJson(doc, body);
+  String url = "/api/device/" + deviceId + "/event";
+  String resp;
+  int code = httpsPost(url, body, resp);
+  if (code != 200) {
+    Serial.printf("[NET] ack failed code=%d\n", code);
+  }
 }
 
+// POST /api/device/{id}/event —— body: {"type":"error","code":N,"message":...}
 void sendError(int code, const String& msg) {
   JsonDocument doc;
   doc["type"]    = "error";
   doc["code"]    = code;
   doc["message"] = msg;
-  String out;
-  serializeJson(doc, out);
-  sendJson(out);
+  String body;
+  serializeJson(doc, body);
+  String url = "/api/device/" + deviceId + "/event";
+  String resp;
+  int httpCode = httpsPost(url, body, resp);
+  if (httpCode != 200) {
+    Serial.printf("[NET] error report failed code=%d\n", httpCode);
+  }
+}
+
+// pollTask：长轮询 GET /api/device/{id}/poll?timeout=N
+// 收到指令 JSON 推入 cmdQueue；收到 Ping（超时占位）忽略；失败按 POLL_BACKOFF_MS 退避
+void pollTask(void* arg) {
+  String path = "/api/device/" + deviceId + "/poll?timeout=" + String(POLL_TIMEOUT_S);
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      vTaskDelay(pdMS_TO_TICKS(POLL_BACKOFF_MS));
+      continue;
+    }
+    String resp;
+    int code = httpsGet(path, resp);
+    if (code != 200) {
+      // 网络错误或 5xx：退避后重试
+      Serial.printf("[POLL] code=%d, backoff %u ms\n", code, POLL_BACKOFF_MS);
+      vTaskDelay(pdMS_TO_TICKS(POLL_BACKOFF_MS));
+      continue;
+    }
+    if (resp.length() == 0) {
+      // 空响应（不应发生）：直接进入下一轮
+      continue;
+    }
+    // 解析 type 字段决定是否入队
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, resp);
+    if (err != DeserializationError::Ok) {
+      Serial.printf("[POLL] JSON parse failed: %s\n", err.c_str());
+      vTaskDelay(pdMS_TO_TICKS(POLL_BACKOFF_MS));
+      continue;
+    }
+    String type = doc["type"] | "";
+    if (type == "ping") {
+      // 后端长轮询超时占位；立即发起下一次 poll
+      continue;
+    }
+    // 真实指令：复制到堆上投递给 loop
+    String* p = new String(resp);
+    if (p == nullptr) {
+      Serial.println("[POLL] alloc failed, drop");
+      continue;
+    }
+    if (xQueueSend(cmdQueue, &p, 0) != pdPASS) {
+      Serial.println("[POLL] queue full, drop cmd");
+      delete p;
+    }
+  }
+}
+
+// 主 loop 调用：从 cmdQueue 拉取所有可用指令并派发到 handler
+void dispatchCommands() {
+  if (cmdQueue == NULL) return;
+  String* p = nullptr;
+  while (xQueueReceive(cmdQueue, &p, 0) == pdPASS) {
+    if (p == nullptr) continue;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, *p);
+    if (err == DeserializationError::Ok) {
+      String type = doc["type"] | "";
+      if      (type == "control")   handleControl(doc);
+      else if (type == "photo")     handlePhoto();
+      else if (type == "pwm_cache") handlePwmCache(doc);
+      else if (type == "ping")      handlePing(doc);
+      else Serial.printf("[NET] unknown cmd type: %s\n", type.c_str());
+    } else {
+      Serial.printf("[NET] cmd JSON parse failed: %s\n", err.c_str());
+    }
+    delete p;
+  }
 }
 
 /* =================================================================
@@ -641,30 +814,8 @@ void videoTask(void* arg) {
 }
 
 /* =================================================================
- * 2.8 接收后端控制指令
+ * 指令处理器（由 dispatchCommands 调用，doc 已解析）
  * ================================================================= */
-void pollUdpRecv() {
-  int packetSize = udpRecv.parsePacket();
-  if (packetSize == 0) return;
-  // 读包（限制最大 1KB，控制指令通常很短）
-  char buf[1024];
-  int len = udpRecv.read(buf, sizeof(buf) - 1);
-  if (len <= 0) return;
-  buf[len] = '\0';
-
-  JsonDocument doc;
-  if (deserializeJson(doc, buf) != DeserializationError::Ok) {
-    Serial.println("[NET] JSON parse failed");
-    return;
-  }
-
-  String type = doc["type"] | "";
-  if      (type == "control")   handleControl(doc);
-  else if (type == "photo")     handlePhoto();
-  else if (type == "pwm_cache") handlePwmCache(doc);
-  else if (type == "ping")      handlePing(doc);
-  else Serial.printf("[NET] unknown type: %s\n", type.c_str());
-}
 
 // type=control：设置运动状态（loop 周期消费 → PID）
 void handleControl(const JsonDocument& doc) {
@@ -813,6 +964,22 @@ void saveConfigToNVS(const String& ssid, const String& password,
   p.end();
 }
 
+// 打印 NVS 中已存的配置（用于调试配网问题；password 仅打长度避免泄露）
+void printStoredConfig() {
+  String ssid, password, server, token;
+  if (!loadConfigFromNVS(ssid, password, server, token)) {
+    Serial.println("[CFG] NVS empty (no valid config)");
+    return;
+  }
+  Serial.println("==================================================");
+  Serial.println("[CFG] stored NVS config:");
+  Serial.printf("       ssid    = %s\n", ssid.c_str());
+  Serial.printf("       password len = %d\n", password.length());
+  Serial.printf("       server  = %s\n", server.c_str());
+  Serial.printf("       token   = %s\n", token.c_str());
+  Serial.println("==================================================");
+}
+
 // 持续监听 Serial，解析 CONFIG 行；成功 → OK → REBOOT
 void pollSerialConfig() {
   static String line;
@@ -820,27 +987,37 @@ void pollSerialConfig() {
     char c = Serial.read();
     if (c == '\n') {
       if (line.startsWith("CONFIG|")) {
+        Serial.printf("[CFG] recv: %s\n", line.c_str());
         String ssid, password, server, token;
         if (parseConfigLine(line, ssid, password, server, token)) {
-          // 校验 server 含 ':'
+          // 校验 server 含 ':' 且端口在 1..65535
           int colon = server.indexOf(':');
           if (colon <= 0) {
-            Serial.println("ERR|invalid_server");
+            Serial.println("ERR|invalid_server (missing :port)");
           } else {
-            // 写 NVS
-            saveConfigToNVS(ssid, password, server, token);
-            Serial.println("OK");
-            Serial.println("REBOOT");
-            Serial.flush();
-            delay(100);
-            ESP.restart();
+            long port = server.substring(colon + 1).toInt();
+            if (port <= 0 || port > 65535) {
+              Serial.println("ERR|invalid_server (port out of range)");
+            } else {
+              // 写 NVS
+              saveConfigToNVS(ssid, password, server, token);
+              Serial.println("[CFG] NVS saved, rebooting...");
+              Serial.println("OK");
+              Serial.println("REBOOT");
+              Serial.flush();
+              delay(100);
+              ESP.restart();
+            }
           }
         } else {
-          Serial.println("ERR|invalid_format");
+          Serial.println("ERR|invalid_format (need ssid|password|server|token)");
         }
+      } else if (line == "CONFIG") {
+        // 查询命令：打印当前 NVS 配置（含 token）
+        printStoredConfig();
       } else if (line.length() > 0) {
         // 非空且非 CONFIG 行：忽略
-        Serial.println("ERR|unknown_command");
+        Serial.printf("ERR|unknown_command: %s\n", line.c_str());
       }
       line = "";
     } else if (c != '\r') {
@@ -866,11 +1043,23 @@ void setup() {
   // 2.1 摄像头
   cameraInit();
 
-  // SD 卡（SDMMC）
-  if (!SD_MMC.begin("/sdcard", true)) {
-    Serial.println("[SD] init failed (photo will be unavailable)");
+  // SD 卡（SDMMC，1-bit 模式 + setPins，与 Freenove 示例一致）
+  // ESP32-S3 SD_MMC 必须先 setPins 再 begin，否则走默认引脚导致挂载失败
+  SD_MMC.setPins(SD_MMC_CLK_PIN, SD_MMC_CMD_PIN, SD_MMC_D0_PIN);
+  if (!SD_MMC.begin("/sdcard", true, true, SDMMC_FREQ_DEFAULT, 5)) {
+    Serial.println("[SD] mount failed (photo unavailable)");
   } else {
-    Serial.println("[SD] mount ok");
+    uint8_t cardType = SD_MMC.cardType();
+    const char* typeName =
+      (cardType == CARD_NONE)   ? "NONE"   :
+      (cardType == CARD_MMC)    ? "MMC"    :
+      (cardType == CARD_SD)     ? "SDSC"   :
+      (cardType == CARD_SDHC)   ? "SDHC"   :
+                                 "UNKNOWN";
+    uint64_t cardSizeMB = SD_MMC.cardSize() / (1024 * 1024);
+    Serial.printf("[SD] mount ok, type=%s, size=%lluMB, total=%lluMB\n",
+                  typeName, cardSizeMB,
+                  SD_MMC.totalBytes() / (1024 * 1024));
     if (!SD_MMC.exists(PHOTO_DIR)) {
       SD_MMC.mkdir(PHOTO_DIR);
     }
@@ -893,16 +1082,19 @@ void setup() {
     }
   }
 
-  // 解析 server="host:port"
+  // 解析 server="host:port"（HTTPS 端口，默认 8080）
   int colon = server.indexOf(':');
   if (colon <= 0) {
     Serial.println("[CFG] invalid server in NVS, waiting for re-provisioning");
     while (true) { pollSerialConfig(); delay(10); }
   }
   backendHost = server.substring(0, colon);
-  backendPort = (uint16_t)server.substring(colon + 1).toInt();
-  if (backendPort == 0) backendPort = BACKEND_UDP_PORT;
+  backendHttpsPort = (uint16_t)server.substring(colon + 1).toInt();
+  if (backendHttpsPort == 0) backendHttpsPort = BACKEND_HTTPS_PORT;
   deviceToken = token;
+  Serial.printf("[CFG] server=%s:%u (HTTPS), UDP video port=%u\n",
+                backendHost.c_str(), backendHttpsPort, BACKEND_UDP_PORT);
+  Serial.printf("[CFG] token=%s (len=%d)\n", deviceToken.c_str(), deviceToken.length());
 
   // 2.7 派生 AES key
   deriveAesKey(token, aesKey);
@@ -928,11 +1120,25 @@ void setup() {
   // 2.6 设备身份
   deviceId = generateDeviceId();
   Serial.printf("[DEV] deviceId=%s\n", deviceId.c_str());
-  Serial.printf("[NET] backend=%s:%u\n", backendHost.c_str(), backendPort);
+  Serial.printf("[NET] backend HTTPS=%s:%u, UDP video=%s:%u\n",
+                backendHost.c_str(), backendHttpsPort,
+                backendHost.c_str(), BACKEND_UDP_PORT);
 
-  // UDP
+  // HTTPS 客户端：信任自签证书（开发期方案；生产应换 mTLS / CA pinning）
+  httpsClient.setInsecure();
+  httpsClient.setTimeout(POLL_HTTP_TIMEOUT_MS);
+  Serial.println("[HTTPS] client ready (insecure mode for self-signed cert)");
+
+  // 指令队列（pollTask → loop）
+  cmdQueue = xQueueCreate(CMD_QUEUE_LEN, sizeof(String*));
+  if (cmdQueue == NULL) {
+    Serial.println("[BOOT] cmdQueue create failed, rebooting in 5s");
+    delay(5000);
+    ESP.restart();
+  }
+
+  // UDP 视频流发送（仅发送，绑定本地端口用于源端口稳定）
   udpSend.begin(BACKEND_UDP_PORT);
-  udpRecv.begin(LOCAL_UDP_PORT);
 
   // 帧序号随机起点（避免重启后 nonce 复用）
   frameSeq = esp_random();
@@ -940,11 +1146,14 @@ void setup() {
   // 初始化 PID 状态
   memset(&pidState, 0, sizeof(pidState));
 
-  // 2.11 发 register 帧
+  // 2.11 发 register（HTTPS POST /api/device/{id}/register）
   sendRegister();
 
   // 启动视频采集任务（core 0，与 WiFi/BT 共享）
   xTaskCreatePinnedToCore(videoTask, "video", 8192, NULL, 1, &videoTaskHandle, 0);
+
+  // 启动 HTTPS 长轮询任务（core 0，与 video 同核；网络 IO 不占 CPU）
+  xTaskCreatePinnedToCore(pollTask, "poll", POLL_TASK_STACK, NULL, 1, &pollTaskHandle, 0);
 
   Serial.println("[BOOT] setup done");
 }
@@ -994,8 +1203,8 @@ void loop() {
     Serial.println("[MOTION] auto stop after durationMs");
   }
 
-  // 2.8 接收后端控制
-  pollUdpRecv();
+  // 2.8 派发 HTTPS 长轮询拉到的指令（pollTask → cmdQueue → handlers）
+  dispatchCommands();
 
   // 2.10 运行时也支持 Web Serial 配网
   pollSerialConfig();

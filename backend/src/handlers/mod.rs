@@ -5,6 +5,7 @@
 //! 在构造响应时直接压缩并设置 Content-Encoding。视频流（BodyStream）不压缩。
 
 pub mod control;
+pub mod device_api;
 pub mod devices;
 pub mod photo;
 pub mod pwm_cache;
@@ -51,6 +52,30 @@ async fn try_route_api(
     state: &AppState,
     accept_gzip: bool,
 ) -> Option<AppResponse> {
+    if let Some(rest) = path.strip_prefix("/api/device/") {
+        // rest 形如 "{deviceId}/{action}" 或 "{deviceId}"
+        let (device_id, action) = match rest.find('/') {
+            Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+            None => (rest, None),
+        };
+        match action {
+            Some("register") if method == Method::POST => {
+                let body = read_body(&mut req).await.ok()?;
+                return Some(
+                    device_api::handle_register(state, device_id, &body, accept_gzip).await,
+                );
+            }
+            Some("poll") if method == Method::GET => {
+                return Some(device_api::handle_poll(state, device_id, &req, accept_gzip).await);
+            }
+            Some("event") if method == Method::POST => {
+                return Some(
+                    device_api::handle_event(state, device_id, &mut req, accept_gzip).await,
+                );
+            }
+            _ => return Some(bad_request("unknown device action", accept_gzip)),
+        }
+    }
     if path == "/api/devices" && method == Method::GET {
         return Some(devices::handle_get_devices(state, accept_gzip).await);
     }
@@ -112,7 +137,7 @@ fn try_serve_static(path: &str, accept_gzip: bool) -> Option<AppResponse> {
 }
 
 /// 读取请求体（限制 1MB 防止内存爆炸）
-async fn read_body(req: &mut Request) -> Result<Bytes, std::io::Error> {
+pub async fn read_body(req: &mut Request) -> Result<Bytes, std::io::Error> {
     let mut payload = req.take_payload();
     let mut buf = Vec::with_capacity(1024);
     while let Some(chunk) = payload.next().await {

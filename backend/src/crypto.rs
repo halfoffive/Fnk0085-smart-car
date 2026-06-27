@@ -40,7 +40,10 @@ impl AeadKey {
         }
     }
 
-    /// 加密：返回 nonce(12) || ciphertext || tag(16) 的拼接字节
+    /// 加密：返回 nonce(12) || ciphertext || tag(16) 的拼接字节。
+    ///
+    /// 生产链路仅用 `open`（设备→后端方向解密视频流）；`seal` 仅供测试覆盖 AEAD 对称性。
+    #[cfg(test)]
     pub fn seal(&self, nonce: &[u8; NONCE_LEN], plaintext: &[u8]) -> bytes::Bytes {
         let nonce = Nonce::from_slice(nonce);
         let ct = self

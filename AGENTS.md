@@ -6,8 +6,8 @@
 
 三端一体单仓，**版本号统一**（固件 / 后端 / 前端 / PWA 缓存键共用 `package.json` 的 `version`，改版本时 PWA 会自动清旧缓存）：
 
-- `firmware/Fnk0085-smart-car/` — ESP32-S3 Arduino `.ino`（摄像头 + 电机 + 编码器 + PID + Web Serial 配网）
-- `backend/` — Rust + actix-http v3.13.1（**启用 `http2` feature**，否则 Chrome 协商 h2 后 actix-http 会 panic；ALPN 由 actix-http 自动注入 `[h2, http/1.1]`，不要手动设 `alpn_protocols`），多设备 UDP 转发 + 1s 视频环形缓存，`include_dir!` 编译期内嵌 `../frontend/dist`
+- `firmware/Fnk0085-smart-car/` — ESP32-S3 Arduino `.ino`（摄像头 + 电机 + 编码器 + PID + Web Serial 配网）。**控制平面走 HTTPS 长轮询**（`WiFiClientSecure::setInsecure()` 信任自签证书；FreeRTOS `pollTask` 拉指令，`cmdQueue` 投递给 `loop` 派发），视频平面走 UDP+AEAD（保留 `udpSend`，移除了 `udpRecv`）。**SD_MMC 必须先 `setPins(39, 38, 40)` 再 `begin("/sdcard", true, true, SDMMC_FREQ_DEFAULT, 5)`**（5 参数版），否则 ESP32-S3 默认引脚挂载失败。
+- `backend/` — Rust + actix-http v3.13.1（**启用 `http2` feature**，否则 Chrome 协商 h2 后 actix-http 会 panic；ALPN 由 actix-http 自动注入 `[h2, http/1.1]`，不要手动设 `alpn_protocols`）。**设备控制通道为 HTTPS 长轮询**：每设备 `mpsc::channel(16)` + `AsyncMutex<Receiver>`，`/api/device/{id}/register|poll|event`；UDP 监听仅处理视频流。`include_dir!` 编译期内嵌 `../frontend/dist`
 - `frontend/` — Vite 8.1.0 + Vue 3.5.9 + TailwindCSS 4.3.1，包管理器用 **bun**（不再用 npm）。PWA 用 `injectManifest` + 自定义 `src/sw.ts`（**不要改回 `generateSW`**，曾经在 Vite 8 下因 workbox shim 异步加载导致 install handler 注册晚于 install 事件，离线白屏）
 - `protocol.md` — 设备↔后端↔前端的通信契约，**任何字段变更必须同步改三端实现 + 本文档**
 
@@ -48,13 +48,16 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 ## 配置与密钥
 
 - `*.jsonc`、`*.crt`、`*.key`、`*.pem` 均 gitignore（含 token 与证书路径）。**不要提交运行时生成的 config / certs**。
-- 默认后端监听 HTTP 8080、UDP 7000；token 默认 `change-me-please`，部署前务必修改。
-- UDP 视频走 AES-128-GCM AEAD（Arduino-ESP32 无 DTLS 高层 API，用 AEAD 等价替代）；HTTP 走 rustls 0.23，支持 mTLS（`client_ca` 设非 null 即启用）。
+- 默认后端监听 HTTPS 8080（HTTP/2 over TLS）、UDP 7000（仅视频）；token 默认 `change-me-please`，部署前务必修改。
+- **设备侧 HTTPS**：`WiFiClientSecure::setInsecure()` 跳过证书校验（开发期方案，**生产应换 `setCACert()` 或 mTLS**）。设备首帧走 `POST /api/device/{id}/register`（body 携带 token），其后所有端点带 `Authorization: Bearer <token>` 头。
+- UDP 视频走 AES-128-GCM AEAD（Arduino-ESP32 无 DTLS 高层 API，用 AEAD 等价替代）；HTTPS 走 rustls 0.23，支持 mTLS（`client_ca` 设非 null 即启用，浏览器侧启用客户端证书）。
 - HTTP 协议版本：HTTP/2 over TLS（同端口 8080），HTTP/3 暂不实现（actix-http 不支持，后期由 nginx 反代）。
+- 固件串口配网等待期发送单行 `CONFIG\n`（不带字段）可查询 NVS 中已存的 ssid / password 长度 / server / token；正常配网行格式见 `protocol.md` 第 4 节。
+- 前端 ConfigDialog 提交前对 `server` 字段做合规校验（hostname / IPv4 / `[IPv6]` + `:port`，端口范围 1-65535），非法时阻止提交。
 
 ## 协议改动清单
 
-改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler、`frontend/src/**`、`protocol.md`。多字节整数小端序。UDP 分包固定 8 段、magic `0xF1 0xD0`、version 起 `1`。
+改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler（`device_api.rs` / `udp_listener.rs`）、`frontend/src/**`、`protocol.md`。多字节整数小端序。UDP 分包固定 8 段、magic `0xF1 0xD0`、version 起 `1`。HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步。
 
 ## 提交约定
 

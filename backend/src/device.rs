@@ -2,7 +2,7 @@
 //!
 //! 使用 `DashMap` 减少锁竞争（单核 1G 内存下避免全局 RwLock 的瓶颈）。
 //! 每个 `DeviceEntry` 持有原子状态（在线/最近心跳/PWM 缓存开关）+ UDP 源地址
-//! + 视频缓存句柄 + 拍照回执通道。
+//! + 视频缓存句柄 + 拍照回执通道 + 指令队列（HTTPS 长轮询消费）。
 
 use crate::video_cache::VideoCache;
 use parking_lot::Mutex;
@@ -11,20 +11,13 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, oneshot};
 
 /// 拍照完成回执
 #[derive(Debug, Clone)]
 pub struct PhotoResult {
     pub path: String,
-}
-
-/// 后端 → 设备的下行指令载体（UDP 监听任务消费后 AEAD 加密回送设备）
-#[derive(Debug)]
-pub struct OutboundCommand {
-    pub device_id: String,
-    /// JSON 字节流（按 protocol.md §2 描述）
-    pub json: bytes::Bytes,
 }
 
 /// 单设备运行态
@@ -34,7 +27,7 @@ pub struct DeviceEntry {
     pub online: AtomicBool,
     /// 最近一次心跳的服务端时间戳（ms）
     pub last_seen_ms: AtomicU64,
-    /// 设备 UDP 源地址（用于下发指令）
+    /// 设备 UDP 源地址（仅用于设备列表/调试，指令下发已迁至 HTTPS）
     pub addr: Mutex<Option<SocketAddr>>,
     /// 视频缓存
     pub video: VideoCache,
@@ -42,6 +35,10 @@ pub struct DeviceEntry {
     pub pwm_cache_enabled: AtomicBool,
     /// 等待中的拍照回执 oneshot（同一设备同时仅允许一个挂起拍照）
     pub photo_pending: Mutex<Option<oneshot::Sender<PhotoResult>>>,
+    /// 指令队列发送端（handlers 推入指令 JSON）
+    pub cmd_tx: mpsc::Sender<bytes::Bytes>,
+    /// 指令队列接收端（HTTPS 长轮询端点消费；同一设备同一时刻仅允许一个 poll 持锁）
+    pub cmd_rx: AsyncMutex<mpsc::Receiver<bytes::Bytes>>,
 }
 
 impl DeviceEntry {
@@ -50,6 +47,7 @@ impl DeviceEntry {
         video_cache_capacity: usize,
         video_max_recent: usize,
     ) -> Arc<Self> {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
         Arc::new(Self {
             device_id,
             online: AtomicBool::new(true),
@@ -58,6 +56,8 @@ impl DeviceEntry {
             video: VideoCache::new(video_cache_capacity, video_max_recent),
             pwm_cache_enabled: AtomicBool::new(true),
             photo_pending: Mutex::new(None),
+            cmd_tx,
+            cmd_rx: AsyncMutex::new(cmd_rx),
         })
     }
 
@@ -71,10 +71,6 @@ impl DeviceEntry {
 
     pub fn set_addr(&self, addr: SocketAddr) {
         *self.addr.lock() = Some(addr);
-    }
-
-    pub fn get_addr(&self) -> Option<SocketAddr> {
-        *self.addr.lock()
     }
 
     pub fn touch(&self, addr: Option<SocketAddr>, ts: u64) {
@@ -113,6 +109,14 @@ impl DeviceEntry {
         } else {
             false
         }
+    }
+
+    /// 推入下行指令（非阻塞，队列满时返回错误由调用方记录丢弃）。
+    pub fn try_push_command(
+        &self,
+        json: bytes::Bytes,
+    ) -> Result<(), mpsc::error::TrySendError<bytes::Bytes>> {
+        self.cmd_tx.try_send(json)
     }
 }
 
@@ -188,25 +192,6 @@ impl DeviceRegistry {
                 last_seen_ms: e.last_seen(),
             })
             .collect()
-    }
-}
-
-/// 出站指令通道句柄（handlers 与 UDP 监听任务之间的桥）
-#[derive(Clone)]
-pub struct CommandSink {
-    pub tx: mpsc::Sender<OutboundCommand>,
-}
-
-impl CommandSink {
-    pub fn new(tx: mpsc::Sender<OutboundCommand>) -> Self {
-        Self { tx }
-    }
-
-    pub async fn send(
-        &self,
-        cmd: OutboundCommand,
-    ) -> Result<(), mpsc::error::SendError<OutboundCommand>> {
-        self.tx.send(cmd).await
     }
 }
 

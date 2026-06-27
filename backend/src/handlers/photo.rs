@@ -2,11 +2,11 @@
 //!
 //! 流程：
 //! 1. 在 DeviceEntry 上注册 oneshot 等待器。
-//! 2. 向设备下发 photo 指令（UDP AEAD）。
+//! 2. 向设备指令队列推入 photo 指令（设备 HTTPS 长轮询拉取）。
 //! 3. 等待 oneshot 回执或 8s 超时。
-//! 4. 收到回执后返回 {path}。
+//! 4. 设备拍照完成后 POST /api/device/{id}/event 上报 photo_done → 触发 oneshot。
 
-use crate::device::{OutboundCommand, PhotoResult};
+use crate::device::PhotoResult;
 use crate::handlers::{device_not_found, json_response, photo_timeout, AppResponse};
 use crate::protocol::DeviceCommand;
 use crate::state::AppState;
@@ -42,24 +42,15 @@ pub async fn handle_post_photo(
         return crate::handlers::bad_request("已有拍照请求挂起，请等待完成", accept_gzip);
     }
 
-    // 下发 photo 指令
+    // 推入 photo 指令
     let cmd = DeviceCommand::Photo {
         quality: "max".to_string(),
         ts: crate::device::now_ms(),
     };
-    let json = match serde_json::to_vec(&cmd) {
-        Ok(v) => Bytes::from(v),
-        Err(e) => {
-            log::error!("序列化 photo 指令失败: {e}");
-            return crate::handlers::bad_request("内部序列化错误", accept_gzip);
+    if let Ok(json) = serde_json::to_vec(&cmd) {
+        if entry.try_push_command(Bytes::from(json)).is_err() {
+            log::warn!("设备 {device_id} 指令队列已满，photo 被丢弃");
         }
-    };
-    let outbound = OutboundCommand {
-        device_id: device_id.to_string(),
-        json,
-    };
-    if state.cmd_sink.send(outbound).await.is_err() {
-        log::warn!("出站指令通道已关闭（设备 {device_id} 的 photo 被丢弃）");
     }
 
     // 等待回执或超时

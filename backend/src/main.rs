@@ -29,7 +29,7 @@ use rustls::ServerConfig;
 
 use crate::config::Config;
 use crate::crypto::derive_key;
-use crate::device::{CommandSink, DeviceRegistry, OutboundCommand};
+use crate::device::DeviceRegistry;
 use crate::state::AppState;
 
 #[actix_rt::main]
@@ -56,37 +56,26 @@ async fn main() -> Result<()> {
     let key = Arc::new(derive_key(&cfg.auth.token));
     let expected_token = Arc::new(cfg.auth.token.clone());
 
-    // 5. 设备注册表 + 指令通道
+    // 5. 设备注册表（每个 DeviceEntry 内含指令队列，供 HTTPS 长轮询消费）
     let registry = Arc::new(DeviceRegistry::new(
         cfg.video.max_devices,
         // 视频缓存参数：广播容量 16，最近帧保留 8（约 1s @ 8fps）
         16,
         8,
     ));
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<OutboundCommand>(64);
-    let cmd_sink = CommandSink::new(cmd_tx);
 
     // 6. 共享状态
     let state = AppState {
         registry: registry.clone(),
         key: key.clone(),
         expected_token: expected_token.clone(),
-        cmd_sink,
     };
 
-    // 7. 启动 UDP 监听任务
+    // 7. 启动 UDP 监听任务（仅视频流；指令与事件已迁至 HTTPS）
     let udp_addr = cfg.udp_addr();
     let udp_state = state.clone();
     actix_rt::spawn(async move {
-        if let Err(e) = udp_listener::run(
-            udp_addr,
-            udp_state.expected_token,
-            udp_state.key,
-            udp_state.registry,
-            cmd_rx,
-        )
-        .await
-        {
+        if let Err(e) = udp_listener::run(udp_addr, udp_state.key, udp_state.registry).await {
             log::error!("UDP 监听退出: {e}");
         }
     });

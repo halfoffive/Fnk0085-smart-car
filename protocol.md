@@ -7,7 +7,7 @@
 
 ## 1. UDP 视频分包包格式（设备 → 后端）
 
-通过 DTLS（UDP+TLS）发送，端口由后端配置决定（默认 7000）。
+视频流走 UDP + 应用层 AES-128-GCM AEAD（Arduino-ESP32 无高层 DTLS API，用 AEAD 等价实现 DTLS 安全属性），端口由后端配置决定（默认 7000）。控制指令不走此通道，见第 2 节 HTTPS。
 所有多字节整数采用**小端序（little-endian）**。
 
 ### 1.1 字节布局
@@ -36,18 +36,25 @@
 
 ---
 
-## 2. 后端 → 设备控制指令（DTLS 下行）
+## 2. HTTPS 设备控制通道（设备 ↔ 后端）
 
-JSON 格式（UTF-8）。
+控制平面走 HTTPS（HTTP/2 over TLS，同端口 8080）。设备端使用 `WiFiClientSecure::setInsecure()` 信任后端自签证书（开发期方案；生产应换 mTLS / CA pinning）。
 
-### 2.1 公共字段
+### 2.1 端点
 
-| 字段 | 类型 | 说明 |
+| 方法 | 路径 | 用途 |
 |------|------|------|
-| type | string | `"control"` \| `"photo"` \| `"pwm_cache"` \| `"ping"` |
-| ts | int | 后端发送时间戳（ms） |
+| POST | `/api/device/{deviceId}/register` | 设备注册：body `{"token":"Bearer xxx"}` |
+| GET  | `/api/device/{deviceId}/poll?timeout=N` | 长轮询拉指令：返回指令 JSON 或 `{"type":"ping"}`（超时占位，N 默认 30，上限 60） |
+| POST | `/api/device/{deviceId}/event` | 设备上报事件：`photo_done` / `ack` / `error` |
 
-### 2.2 type=control
+所有端点（除 register）需带 `Authorization: Bearer <token>` 头。register 端点用 body 中的 token 校验。
+
+### 2.2 下行指令（poll 返回）
+
+JSON 格式（UTF-8），tag=`type`，字段 camelCase。
+
+#### 2.2.1 type=control
 
 ```json
 {
@@ -63,7 +70,7 @@ JSON 格式（UTF-8）。
 - `pwm`: `0..255`
 - `durationMs`: 可选，执行时长（毫秒），超时自动停止
 
-### 2.3 type=photo
+#### 2.2.2 type=photo
 
 ```json
 {
@@ -75,7 +82,7 @@ JSON 格式（UTF-8）。
 
 - `quality`: 固定 `"max"`（仅一种质量档位）
 
-### 2.4 type=pwm_cache
+#### 2.2.3 type=pwm_cache
 
 ```json
 {
@@ -87,7 +94,7 @@ JSON 格式（UTF-8）。
 
 - `enabled`: bool，是否启用 PWM 缓存
 
-### 2.5 type=ping
+#### 2.2.4 type=ping
 
 ```json
 {
@@ -99,43 +106,23 @@ JSON 格式（UTF-8）。
 
 - `seq`: int，递增序号，用于往返时延测量
 
----
+### 2.3 上行事件（POST event）
 
-## 3. 设备 → 后端事件回执（DTLS 上行）
+JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 
-JSON 格式（UTF-8）。
-
-### 3.1 公共字段
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| type | string | `"register"` \| `"photo_done"` \| `"ack"` \| `"error"` |
-
-### 3.2 type=register
-
-```json
-{
-  "type": "register",
-  "deviceId": "ESP32S3_123456_AABBCCDDEEFF",
-  "token": "Bearer xxxx"
-}
-```
-
-初次认证时发送，后端校验 `token` 与 `deviceId` 绑定关系。
-
-### 3.3 type=photo_done
+#### 2.3.1 type=photo_done
 
 ```json
 {
   "type": "photo_done",
-  "path": "/sd/photo/001.jpg",
+  "path": "/photo/photo_123456.jpg",
   "uptimeMs": 123456
 }
 ```
 
 拍照完成回执，`path` 为 SD 卡上的保存路径，`uptimeMs` 为设备系统运行时间（ms）。
 
-### 3.4 type=ack
+#### 2.3.2 type=ack
 
 ```json
 {
@@ -144,28 +131,30 @@ JSON 格式（UTF-8）。
 }
 ```
 
-- `refSeq`: 对应 `ping` 的 `seq` 或 `control` 的隐式序号
+- `refSeq`: 对应 `ping` 的 `seq`
 
-### 3.5 type=error
+#### 2.3.3 type=error
 
 ```json
 {
   "type": "error",
-  "code": 5001,
-  "message": "camera init failed"
+  "code": 5002,
+  "message": "photo capture or sd write failed"
 }
 ```
 
 - `code`: int，业务错误码
 - `message`: string，可读错误描述
 
+> register 事件不接受在 `/event` 端点上报，必须走 `/register` 端点。
+
 ---
 
-## 4. HTTP API（前端 ↔ 后端）
+## 3. 浏览器 HTTP API（前端 ↔ 后端）
 
 所有路径前缀 `/api`。响应默认 JSON（除流式接口）。
 
-### 4.1 GET /api/devices
+### 3.1 GET /api/devices
 
 返回设备列表：
 
@@ -175,7 +164,7 @@ JSON 格式（UTF-8）。
 ]
 ```
 
-### 4.2 POST /api/control/{deviceId}
+### 3.2 POST /api/control/{deviceId}
 
 请求体：
 
@@ -192,22 +181,22 @@ JSON 格式（UTF-8）。
 {"ok": true}
 ```
 
-### 4.3 POST /api/photo/{deviceId}
+### 3.3 POST /api/photo/{deviceId}
 
-同步等待设备 `photo_done` 后返回：
+同步等待设备 `photo_done`（8s 超时）后返回：
 
 ```json
-{"path": "/sd/photo/001.jpg"}
+{"path": "/photo/photo_001.jpg"}
 ```
 
-### 4.4 GET /api/stream/{deviceId}
+### 3.4 GET /api/stream/{deviceId}
 
 SSE 或 chunked transfer。每条消息为一帧完整 JPEG：
 
 - Content-Type: `image/jpeg`（每帧）
 - 响应头 `X-Latency-Ms: <int>`：本帧端到端延迟（ms）
 
-### 4.5 GET /api/pwm_cache/{deviceId}
+### 3.5 GET /api/pwm_cache/{deviceId}
 
 ```json
 {
@@ -216,7 +205,7 @@ SSE 或 chunked transfer。每条消息为一帧完整 JPEG：
 }
 ```
 
-### 4.6 POST /api/pwm_cache/{deviceId}
+### 3.6 POST /api/pwm_cache/{deviceId}
 
 请求体：
 
@@ -230,17 +219,17 @@ SSE 或 chunked transfer。每条消息为一帧完整 JPEG：
 {"ok": true}
 ```
 
-### 4.7 静态资源
+### 3.7 静态资源
 
 - `GET /` → 返回 `index.html`（内嵌前端 PWA）
 
 ---
 
-## 5. Web Serial 配网帧格式（前端 → ESP32 串口）
+## 4. Web Serial 配网帧格式（前端 → ESP32 串口）
 
 ASCII 行协议，每行一条命令，以 `\n` 结尾。
 
-### 5.1 配网命令
+### 4.1 配网命令
 
 ```
 CONFIG|ssid=<ssid>|password=<pwd>|server=<host:port>|token=<token>\n
@@ -250,10 +239,18 @@ CONFIG|ssid=<ssid>|password=<pwd>|server=<host:port>|token=<token>\n
 
 - `ssid`: WiFi SSID
 - `password`: WiFi 密码
-- `server`: 后端 DTLS 主机:端口
+- `server`: 后端 HTTPS 主机:端口（默认 8080，与浏览器访问同端口）
 - `token`: 设备认证 token
 
-### 5.2 ESP32 回复
+### 4.2 查询命令（串口）
+
+```
+CONFIG\n
+```
+
+单独发送 `CONFIG` 行不带任何字段时，设备从 NVS 读出当前已存的 `ssid` / `password` 长度 / `server` / `token` 并在串口回显，用于排查配网问题。
+
+### 4.3 ESP32 回复
 
 成功：
 
@@ -277,16 +274,18 @@ ERR|<reason>\n
 
 ---
 
-## 6. 鉴权
+## 5. 鉴权
 
-### 6.1 设备 → 后端 DTLS
+### 5.1 设备 → 后端 HTTPS
 
-- 双向证书（mTLS）认证
-- `register` 帧中 `token` 与 `deviceId` 绑定校验
-- 证书路径与 CA 由后端配置决定（`*.jsonc`）
+- TLS 自签证书；设备端通过 `WiFiClientSecure::setInsecure()` 信任（开发期方案，跳过证书校验）
+- 生产部署应改为 `setCACert(root_ca)` 或 mTLS 客户端证书（由后端 `client_ca` 配置项启用）
+- `Authorization: Bearer <token>` 头校验，`token` 与 `deviceId` 绑定
+- `register` 端点用 body 中的 token 校验（首帧尚未建立 session）
 
-### 6.2 前端 → 后端 HTTP
+### 5.2 前端 → 后端 HTTP
 
+- 浏览器走 HTTPS（HTTP/2 over TLS，同端口 8080），自签证书需用户在浏览器侧信任
 - 可选 Bearer token（如配置启用）
 - 由后端配置决定是否强制鉴权
 

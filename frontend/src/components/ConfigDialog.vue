@@ -54,10 +54,46 @@ function setField(key: keyof typeof form.value, v: string) {
   form.value = { ...form.value, [key]: v };
 }
 
+// 校验 server 字段：支持 hostname / IPv4 / [IPv6] + :port
+// 返回 null 表示合法，否则返回中文错误描述
+function validateServer(input: string): string | null {
+  const s = input.trim();
+  if (!s) return '服务器地址不能为空';
+  let host: string;
+  let portStr: string;
+  if (s.startsWith('[')) {
+    // IPv6 字面量：[::1]:8080
+    const close = s.indexOf(']');
+    if (close < 1) return 'IPv6 地址缺少 ]';
+    host = s.slice(1, close);
+    if (s[close + 1] !== ':') return 'IPv6 地址后必须跟 :port';
+    portStr = s.slice(close + 2);
+  } else {
+    const colon = s.lastIndexOf(':');
+    if (colon <= 0) return '格式应为 host:port（例如 192.168.1.10:8080）';
+    host = s.slice(0, colon);
+    portStr = s.slice(colon + 1);
+  }
+  if (!host) return '主机名不能为空';
+  if (host.length > 253) return '主机名过长（>253）';
+  // 主机名合法字符：字母数字 . - （IPv4 也满足）
+  if (!/^[A-Za-z0-9.\-]+$/.test(host)) return '主机名含非法字符';
+  if (!/^\d{1,5}$/.test(portStr)) return '端口必须为 1-5 位数字';
+  const port = parseInt(portStr, 10);
+  if (port < 1 || port > 65535) return '端口范围 1-65535';
+  return null;
+}
+
 async function handleSubmit() {
   if (!form.value.ssid || !form.value.server || !form.value.token) {
     resultOk.value = false;
     resultMsg.value = '请完整填写 SSID / 服务器地址 / token';
+    return;
+  }
+  const serverErr = validateServer(form.value.server);
+  if (serverErr) {
+    resultOk.value = false;
+    resultMsg.value = `服务器地址无效：${serverErr}`;
     return;
   }
   resultMsg.value = null;
@@ -150,7 +186,7 @@ function onBackdropClick(e: MouseEvent) {
             type="text"
             :value="form.server"
             @input="(e) => setField('server', (e.target as HTMLInputElement).value)"
-            placeholder="api.example.com:7000"
+            placeholder="192.168.1.10:8080"
             :disabled="connecting"
             class="w-full bg-surface-2 border border-border-bright focus:border-accent focus:outline-none px-3 py-2 text-sm text-ink placeholder:text-ink-faint/50 disabled:opacity-50 transition-colors font-sans"
             autocomplete="off"

@@ -3,7 +3,6 @@
 //! PWM 缓存语义：设备本地维护方向→PWM 的默认值映射表，
 //! 启用后控制指令可省略 pwm 字段（设备使用缓存值）。
 
-use crate::device::OutboundCommand;
 use crate::handlers::{bad_request, device_not_found, json_response, AppResponse};
 use crate::protocol::DeviceCommand;
 use crate::state::AppState;
@@ -94,12 +93,8 @@ pub async fn handle_post(
         ts: crate::device::now_ms(),
     };
     if let Ok(json) = serde_json::to_vec(&cmd) {
-        let outbound = OutboundCommand {
-            device_id: device_id.to_string(),
-            json: Bytes::from(json),
-        };
-        if state.cmd_sink.send(outbound).await.is_err() {
-            log::warn!("出站指令通道已关闭（设备 {device_id} 的 pwm_cache 被丢弃）");
+        if entry.try_push_command(Bytes::from(json)).is_err() {
+            log::warn!("设备 {device_id} 指令队列已满，pwm_cache 被丢弃");
         }
     }
 

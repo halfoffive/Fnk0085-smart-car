@@ -5,7 +5,7 @@
 //! （broadcast）内部，遵循"函数式风格 + 必要处用并发原语"的约束。
 
 use crate::crypto::AeadKey;
-use crate::device::{CommandSink, DeviceRegistry};
+use crate::device::DeviceRegistry;
 use std::sync::Arc;
 
 /// 应用全局状态（不可变，Clone 廉价）
@@ -13,10 +13,8 @@ use std::sync::Arc;
 pub struct AppState {
     /// 设备注册表（DashMap 内部并发安全）
     pub registry: Arc<DeviceRegistry>,
-    /// AEAD 密钥句柄（用于解密/加密设备 UDP 包）
+    /// AEAD 密钥句柄（用于解密设备 UDP 视频包）
     pub key: Arc<AeadKey>,
-    /// 期望的 token（用于 register 校验，可带 "Bearer " 前缀）
+    /// 期望的 token（用于 HTTPS register / poll / event 校验）
     pub expected_token: Arc<String>,
-    /// 出站指令通道（handlers → UDP 出站循环）
-    pub cmd_sink: CommandSink,
 }
