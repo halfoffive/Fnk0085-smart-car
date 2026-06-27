@@ -18,7 +18,8 @@ const DEFAULT_CONFIG_JSONC: &str = r#"{
   "http": { "host": "0.0.0.0", "port": 8080 },
   "video": { "cache_seconds": 1, "max_devices": 32 },
   "auth": {
-    "token": "change-me-please"
+    "token": "change-me-please",
+    "frontend_password": "admin1234"
   },
   "log_level": "info"
 }
@@ -45,6 +46,8 @@ pub struct VideoConfig {
 pub struct AuthConfig {
     /// 设备认证 token（HTTP Bearer）
     pub token: String,
+    /// 前端访问密码（明文存配置，默认 admin1234，部署前修改）
+    pub frontend_password: String,
 }
 
 /// 顶层配置（不可变，启动时一次加载）
@@ -163,5 +166,6 @@ mod tests {
         assert_eq!(cfg.http.port, 8080);
         assert_eq!(cfg.video.cache_seconds, 1);
         assert_eq!(cfg.auth.token, "change-me-please");
+        assert_eq!(cfg.auth.frontend_password, "admin1234");
     }
 }

@@ -5,9 +5,11 @@ import DeviceSelect from './components/DeviceSelect.vue';
 import VideoStream from './components/VideoStream.vue';
 import ControlPanel from './components/ControlPanel.vue';
 import ConfigDialog from './components/ConfigDialog.vue';
+import LoginView from './components/LoginView.vue';
 import { useKeyboard } from './composables/useKeyboard';
 import { useDevices } from './composables/useDevices';
 import { pwmToSlider, sliderToPwm } from './lib/api';
+import { isAuthed, clearAuthed } from './lib/auth';
 import { APP_VERSION, PWM_MAX } from './lib/constants';
 import { registerSW } from 'virtual:pwa-register';
 
@@ -25,6 +27,14 @@ const configOpen = ref(false);
 const photoPending = ref(false);
 const toasts = ref<Toast[]>([]);
 let toastId = 0;
+
+// 访问密码登录态（sessionStorage 生命周期 = tab）
+const authed = ref(isAuthed());
+
+function handleLogout() {
+  clearAuthed();
+  authed.value = false;
+}
 
 // PWA SW 注册：版本更新提示
 onMounted(() => {
@@ -107,7 +117,8 @@ const toastIcon = (kind: ToastKind) => (kind === 'success' ? '✓' : kind === 'e
 </script>
 
 <template>
-  <div class="h-screen w-screen flex flex-col bg-base text-ink overflow-hidden">
+  <LoginView v-if="!authed" @authed="authed = true" />
+  <div v-else class="h-screen w-screen flex flex-col bg-base text-ink overflow-hidden">
     <!-- ============ 顶部状态条 ============ -->
     <header
       class="flex items-center justify-between px-4 h-12 border-b border-border bg-surface/80 backdrop-blur z-30"
@@ -147,6 +158,14 @@ const toastIcon = (kind: ToastKind) => (kind === 'success' ? '✓' : kind === 'e
         <span class="text-ink-dim">
           v<span class="text-ink">{{ APP_VERSION }}</span>
         </span>
+        <span class="text-ink-faint">·</span>
+        <button
+          type="button"
+          class="text-ink-faint hover:text-ink transition-colors font-mono text-[10px] uppercase tracking-wider"
+          @click="handleLogout"
+        >
+          logout
+        </button>
       </div>
     </header>
 

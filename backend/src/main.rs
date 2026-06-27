@@ -40,8 +40,9 @@ async fn main() -> Result<()> {
 
     log::info!("Fnk0085 后端启动中：HTTP {}", cfg.http_addr());
 
-    // 3. 期望 token（用于设备 Bearer 校验）
+    // 3. 期望 token（用于设备 Bearer 校验）+ 前端访问密码
     let expected_token = std::sync::Arc::new(cfg.auth.token.clone());
+    let frontend_password = std::sync::Arc::new(cfg.auth.frontend_password.clone());
 
     // 4. 设备注册表（每个 DeviceEntry 内含指令队列，供 HTTP 长轮询消费）
     let registry = std::sync::Arc::new(DeviceRegistry::new(
@@ -55,6 +56,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         registry: registry.clone(),
         expected_token: expected_token.clone(),
+        frontend_password: frontend_password.clone(),
         log_level: Arc::new(cfg.log_level.clone()),
         server_addr: cfg.http_addr(),
     };

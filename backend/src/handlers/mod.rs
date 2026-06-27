@@ -4,6 +4,7 @@
 //! gzip 中间件：对返回 Bytes 体的 handler，传入 `accept_gzip` 标志，
 //! 在构造响应时直接压缩并设置 Content-Encoding。视频流（BodyStream）不压缩。
 
+pub mod auth;
 pub mod control;
 pub mod device_api;
 pub mod devices;
@@ -84,6 +85,11 @@ async fn try_route_api(
             &serde_json::json!({"status":"ok","version":"0.3.1"}),
             accept_gzip,
         ));
+    }
+    // 前端登录：无鉴权（登录端点本身不要求已登录），校验 frontend_password
+    if path == "/api/auth/login" && method == Method::POST {
+        let body = read_body(&mut req).await.ok()?;
+        return Some(auth::handle_login(state, &body, accept_gzip).await);
     }
     // 配网配置：无鉴权，返回本服务地址与 token 供前端 Web Serial 弹窗自动填充
     if path == "/api/config" && method == Method::GET {

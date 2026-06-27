@@ -56,6 +56,7 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
   - 兼容无 scheme 老配置：默认走 HTTPS
 - **固件 DNS**：`WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, IPAddress(119,29,29,29), IPAddress(8,8,8,8))` 在 `WiFi.begin()` 前调用（5 参数版：DHCP 自动获取 IP/Gateway/Subnet，仅显式指定 DNS1+DNS2）。`119.29.29.29` 是 DNSPod 国内 DNS，`8.8.8.8` 是 Google 备份。
 - 设备首帧走 `POST /api/device/{id}/register`（body 携带 token），其后所有端点带 `Authorization: Bearer <token>` 头。视频帧 POST body 为原始 JPEG（`Content-Type: image/jpeg`，header 另带 `X-Device-Uptime-Ms`）。
+- **前端访问密码**：配置文件 `auth.frontend_password` 字段（明文存 jsonc，默认 `admin1234`），前端访问需 `POST /api/auth/login` 校验通过后存 sessionStorage（关 tab 重登）。**仅页面访问门槛**，不保护前端面向 API（control/photo/stream 等仍无鉴权，知道后端地址可直调），生产安全依赖 nginx 网络层隔离。
 - SNTP 时间同步（`configTime(0, "pool.ntp.org", "time.google.com")`，5s 超时失败仅告警）保留作为日志辅助；`setInsecure()` 跳过证书时间校验，SNTP 失败不影响 HTTPS 握手。
 - HTTP 协议版本：后端单端口明文 HTTP/2（h2c），HTTP/3 由 nginx 反代提供（actix-http 不支持 HTTP/3）。
 - 固件串口配网等待期发送单行 `CONFIG\n`（不带字段）可查询 NVS 中已存的 ssid / password 长度 / server / token；正常配网行格式见 `protocol.md` 第 4 节。
@@ -77,6 +78,7 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - **若 S3 串口按 WASD 无反应**：先确认串口已输出 `[CTRL] direction=... pwm=... durationMs=...`；若无此日志，则指令未到达固件，需依次检查前端 deviceId 是否合法、后端 `/api/device/{id}/poll` 队列是否正常、固件 `pollTask` 是否在线
 - **拍照时串口报 `SCCB_Write Failed addr:0x30 ... ret:259` 且后端 504**：根因是 GPIO 引脚冲突（PIN_IN1=4 与 SIOD 冲突、PIN_IN2=5 与 SIOC 冲突、PIN_IN3=6 与 VSYNC 冲突、PIN_IN4=7 与 HREF 冲突、PIN_ENC_RIGHT=15 与 XCLK 冲突），`motorInit()` / `encoderInit()` 在 `cameraInit()` 之后执行把摄像头 GPIO 全部重路由掉。已修复：电机方向引脚重映射到 41/42/47/21，右编码器移到 GPIO 3（strapping pin，boot 后 INPUT_PULLUP 安全）。`photoMux` 二进制信号量仍保留作为 videoTask / handlePhoto 的并发保护（次要但合理）。拍照失败时设备上报 `DeviceEvent::Error`，后端立即触发 photo oneshot 释放，`/api/photo/{id}` 返回 HTTP 502 而非等满 8s 返回 504。
 - **前端视频画面无流**：检查串口是否周期打印 `[VIDEO] frames ok=%u fail=%u` 与 `[FRAME] POST failed ...`；`ok=0 fail=0` 表示 videoTask 未拿到帧（可能 photoInProgress 卡住或摄像头初始化失败）；`fail` 持续增加则检查后端 `/api/device/{id}/frame` 是否返回 401/404/413 或 scheme 是否匹配。
+- **忘记前端密码**：编辑运行目录下 `Fnk0085-smart-car-config.jsonc` 的 `auth.frontend_password` 字段后重启后端；若配置文件不存在，后端启动会自动写入默认值 `admin1234`。
 
 ## 协议改动清单
 
