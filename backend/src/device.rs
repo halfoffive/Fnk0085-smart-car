@@ -122,6 +122,7 @@ impl DeviceEntry {
 
 /// 设备列表项（HTTP /api/devices 返回）
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceSummary {
     pub device_id: String,
     pub online: bool,

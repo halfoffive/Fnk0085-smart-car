@@ -916,6 +916,7 @@ void handleControl(const JsonDocument& doc) {
   String dir = doc["direction"] | "stop";
   int pwm = doc["pwm"] | 0;
   uint32_t durationMs = doc["durationMs"] | (uint32_t)0;
+  Serial.printf("[CTRL] direction=%s pwm=%d durationMs=%u\n", dir.c_str(), pwm, durationMs);
 
   if (pwm < 0) pwm = 0;
   if (pwm > PWM_MAX) pwm = PWM_MAX;
@@ -1254,7 +1255,7 @@ void setup() {
   bool sntpOk = false;
   while ((millis() - sntpStart) < SNTP_TIMEOUT_MS) {
     now = time(nullptr);
-    if ((uint32_t)now > SNTP_VALID_AFTER) {
+    if (now > 0 && (uint32_t)now > SNTP_VALID_AFTER) {
       sntpOk = true;
       break;
     }

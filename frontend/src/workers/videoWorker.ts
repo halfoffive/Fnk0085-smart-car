@@ -118,8 +118,8 @@ async function startStream(deviceId: string, apiBase: string) {
           latencyMs: effectiveLatency,
           frameSeq,
         };
-        // transferable：blob 内部 buffer 转移所有权
-        (self as unknown as Worker).postMessage(msg, [blob]);
+        // Blob 不可转移，使用结构化克隆传递
+        (self as unknown as Worker).postMessage(msg);
       }
       buffer = buffer.slice(endIdx);
     }

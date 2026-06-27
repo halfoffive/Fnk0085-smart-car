@@ -10,6 +10,12 @@
 - 后端新增 `GET /api/health` 健康端点（无鉴权，返回 `{"status":"ok","version":"0.3.1"}`），用于固件启动 scheme 探测与运维监控
 - 固件启动主动探测 HTTP/HTTPS scheme：WiFi 关联 + SNTP 同步后、首次 register 之前调用 `probeScheme()`，先试 NVS 配的 scheme，失败再试另一 scheme，成功则切换并写回 NVS（auto-correct），冷启动不再刷 TLS 错误日志
 
+### Fixed
+- 修复后端 `GET /api/devices` 字段命名（`deviceId`/`lastSeenMs`）与 `protocol.md` 一致
+- 修复前端视频 Worker 错误地把 `Blob` 放入 `postMessage` transfer list 导致首帧崩溃
+- 修复固件 SNTP 同步判断可能把负错误码误判为成功
+- 增加固件 `handleControl` 串口日志，便于确认 WASD 指令到达
+
 ### Changed
 - 固件 `logTlsAndHttpError` HTTPS 模式 TLS 失败措辞改善：从 `[TLS] <tag> lastErr=<n> <desc>` 改为 `[TLS] <tag> handshake failed: code=<n> <desc> (backend may be plain HTTP)`，明确指出可能 scheme 不匹配（而非误导的 `connection refused`）
 

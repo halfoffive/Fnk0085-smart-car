@@ -73,6 +73,8 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - 固件启动主动探测后端 scheme：WiFi 关联 + SNTP 同步后、首次 register 之前调用 `probeScheme()`，先探测 NVS 配的 scheme（GET /api/health），失败则试另一 scheme，成功则切换 `useHttps` + 写回 NVS（auto-correct），探测期间静默 TLS 错误。冷启动日志应只出现 `[NET] probe: <scheme> ok, using <scheme>` 或 `[NET] probe: <old> failed (code=<n>), <new> ok, switching to <new> (NVS updated)`
 - 后端 `/api/health` 端点：`GET /api/health` 无鉴权，返回 200 + `{"status":"ok","version":"0.3.1"}`，用于固件启动 scheme 探测与运维监控
 - 后端 HTTP/2 h2c 支持情况：`actix-http` 启用 `http2` feature + `tcp_auto_h2c()` 协商明文 HTTP/2，nginx 反代或 h2c 客户端可用 HTTP/2；固件受 ESP32 Arduino `HTTPClient` 库限制仍走 HTTP/1.1；HTTP/3 (QUIC) 在 ESP32 上不可行
+- **若前端设备名为空且视频一直 loading**：先检查 `GET /api/devices` 响应字段是否为 camelCase（`deviceId`/`lastSeenMs`）；排查工具可用浏览器 devtools Network 查看响应字段，若仍为 `device_id`/`last_seen_ms` 说明后端序列化未生效
+- **若 S3 串口按 WASD 无反应**：先确认串口已输出 `[CTRL] direction=... pwm=... durationMs=...`；若无此日志，则指令未到达固件，需依次检查前端 deviceId 是否合法、后端 `/api/device/{id}/poll` 队列是否正常、固件 `pollTask` 是否在线
 
 ## 协议改动清单
 

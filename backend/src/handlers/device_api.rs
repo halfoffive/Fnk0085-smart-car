@@ -55,7 +55,7 @@ pub async fn handle_register(
     match state.registry.get_or_create(device_id) {
         Ok(entry) => {
             entry.touch(None, now_ms());
-            log::info!("设备 {device_id} HTTPS 注册成功");
+            log::info!("设备 {device_id} 控制通道注册成功");
             json_response(StatusCode::OK, &OkResponse { ok: true }, accept_gzip)
         }
         Err(e) => {
