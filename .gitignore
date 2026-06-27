@@ -19,6 +19,9 @@ build/
 **/__pycache__/
 *.pyc
 
+# 测试截图（运行产物，不入库）
+test-screenshots/
+
 # 运行时配置（含 token/SSL 路径等敏感字段）
 *.jsonc
 !protocol.md
