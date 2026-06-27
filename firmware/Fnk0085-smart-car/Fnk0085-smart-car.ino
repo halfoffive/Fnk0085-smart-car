@@ -184,6 +184,10 @@ uint16_t backendPort = BACKEND_HTTPS_PORT;  // 后端端口（默认 8080；http
 WiFiClientSecure    httpsClient;    // https 模式客户端（setInsecure，跳过证书校验）
 WiFiClient           plainClient;    // http 模式客户端（明文，直连后端）
 bool                 useHttps = true;  // scheme 开关；由 parseConfigLine 解析 server 字段决定
+// TLS 握手失败标记（session 内 sticky）：
+// - 首次 httpsClient 失败（http.POST/GET 返回 -1）后置 true，后续请求直接走 plainClient
+// - 重启或 NVS 重配后复位为 false，重新尝试 TLS
+bool                 httpsHandshakeFailed = false;
 QueueHandle_t        cmdQueue = NULL;  // pollTask → loop 的指令队列
 TaskHandle_t         pollTaskHandle = NULL;
 SemaphoreHandle_t    httpsMutex = NULL;  // 保护 httpsClient 并发访问（pollTask / videoTask / loop 三方）
@@ -504,6 +508,17 @@ void httpsLockGive() {
   if (httpsMutex != NULL) xSemaphoreGive(httpsMutex);
 }
 
+// 打印 TLS 与 HTTPClient 错误诊断日志（HTTPS 模式且未回退时取 TLS 错误码）
+// 调用方传入 HTTPClient 引用、返回 code、tag（如 "POST"/"GET"/"FRAME"）
+void logTlsAndHttpError(HTTPClient& http, int code, const char* tag) {
+  if (useHttps && !httpsHandshakeFailed) {
+    char errBuf[128] = {0};
+    int tlsErr = httpsClient.getLastSSLError(errBuf, sizeof(errBuf));
+    Serial.printf("[TLS] %s lastErr=%d %s\n", tag, tlsErr, errBuf);
+  }
+  Serial.printf("[HTTP] %s error=%d %s\n", tag, code, http.errorToString(code).c_str());
+}
+
 // POST JSON 到指定 path；返回 HTTP 状态码（>=200），<0 为网络/协议错误
 // 调用前后持 httpsMutex 互斥保护客户端（pollTask / videoTask / loop 三方并发）
 // 根据 useHttps 选择 httpsClient（TLS）或 plainClient（明文）
@@ -514,8 +529,9 @@ int httpsPost(const String& path, const String& body, String& respOut) {
   }
   HTTPClient http;
   String url = buildUrl(path);
-  bool ok = useHttps ? http.begin(httpsClient, url)
-                     : http.begin(plainClient, url);
+  bool useTls = useHttps && !httpsHandshakeFailed;
+  bool ok = useTls ? http.begin(httpsClient, url)
+                   : http.begin(plainClient, url);
   if (!ok) {
     Serial.printf("[HTTPS] POST begin failed: %s\n", url.c_str());
     httpsLockGive();
@@ -525,7 +541,32 @@ int httpsPost(const String& path, const String& body, String& respOut) {
   http.addHeader("Authorization", "Bearer " + deviceToken);
   http.setTimeout(POLL_HTTP_TIMEOUT_MS);
   int code = http.POST(body);
-  if (code > 0) respOut = http.getString();
+  if (code == -1 && useTls) {
+    // TLS 握手失败（如对端为明文 HTTP 端口）：打印诊断日志、置 sticky 标记、回退 plainClient 重试一次
+    logTlsAndHttpError(http, code, "POST");
+    httpsHandshakeFailed = true;
+    http.end();
+    HTTPClient http2;
+    if (!http2.begin(plainClient, url)) {
+      Serial.printf("[HTTPS] POST retry begin failed: %s\n", url.c_str());
+      httpsLockGive();
+      return -1;
+    }
+    http2.addHeader("Content-Type", "application/json");
+    http2.addHeader("Authorization", "Bearer " + deviceToken);
+    http2.setTimeout(POLL_HTTP_TIMEOUT_MS);
+    int retryCode = http2.POST(body);
+    if (retryCode > 0) respOut = http2.getString();
+    http2.end();
+    httpsLockGive();
+    return retryCode;
+  }
+  if (code < 0) {
+    // 其它网络/协议错误：仅打印日志，不回退
+    logTlsAndHttpError(http, code, "POST");
+  } else if (code > 0) {
+    respOut = http.getString();
+  }
   http.end();
   httpsLockGive();
   return code;
@@ -539,8 +580,9 @@ int httpsGet(const String& path, String& respOut) {
   }
   HTTPClient http;
   String url = buildUrl(path);
-  bool ok = useHttps ? http.begin(httpsClient, url)
-                     : http.begin(plainClient, url);
+  bool useTls = useHttps && !httpsHandshakeFailed;
+  bool ok = useTls ? http.begin(httpsClient, url)
+                   : http.begin(plainClient, url);
   if (!ok) {
     Serial.printf("[HTTPS] GET begin failed: %s\n", url.c_str());
     httpsLockGive();
@@ -550,7 +592,32 @@ int httpsGet(const String& path, String& respOut) {
   http.addHeader("Cache-Control", "no-store");
   http.setTimeout(POLL_HTTP_TIMEOUT_MS);
   int code = http.GET();
-  if (code > 0) respOut = http.getString();
+  if (code == -1 && useTls) {
+    // TLS 握手失败：打印诊断日志、置 sticky 标记、回退 plainClient 重试一次
+    logTlsAndHttpError(http, code, "GET");
+    httpsHandshakeFailed = true;
+    http.end();
+    HTTPClient http2;
+    if (!http2.begin(plainClient, url)) {
+      Serial.printf("[HTTPS] GET retry begin failed: %s\n", url.c_str());
+      httpsLockGive();
+      return -1;
+    }
+    http2.addHeader("Authorization", "Bearer " + deviceToken);
+    http2.addHeader("Cache-Control", "no-store");
+    http2.setTimeout(POLL_HTTP_TIMEOUT_MS);
+    int retryCode = http2.GET();
+    if (retryCode > 0) respOut = http2.getString();
+    http2.end();
+    httpsLockGive();
+    return retryCode;
+  }
+  if (code < 0) {
+    // 其它网络/协议错误：仅打印日志，不回退
+    logTlsAndHttpError(http, code, "GET");
+  } else if (code > 0) {
+    respOut = http.getString();
+  }
   http.end();
   httpsLockGive();
   return code;
@@ -566,8 +633,9 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   }
   String url = buildUrl("/api/device/" + deviceId + "/frame");
   HTTPClient http;
-  bool ok = useHttps ? http.begin(httpsClient, url)
-                     : http.begin(plainClient, url);
+  bool useTls = useHttps && !httpsHandshakeFailed;
+  bool ok = useTls ? http.begin(httpsClient, url)
+                   : http.begin(plainClient, url);
   if (!ok) {
     log_e("[FRAME] begin 失败");
     httpsLockGive();
@@ -578,6 +646,33 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   http.addHeader("X-Device-Uptime-Ms", String((unsigned long long)uptimeMs));
   http.setTimeout(FRAME_POST_TIMEOUT_MS);
   int code = http.POST(jpeg, len);
+  if (code == -1 && useTls) {
+    // TLS 握手失败：打印诊断日志、置 sticky 标记、回退 plainClient 重试一次
+    logTlsAndHttpError(http, code, "FRAME");
+    httpsHandshakeFailed = true;
+    http.end();
+    HTTPClient http2;
+    if (!http2.begin(plainClient, url)) {
+      log_e("[FRAME] retry begin 失败");
+      httpsLockGive();
+      return -1;
+    }
+    http2.addHeader("Authorization", "Bearer " + deviceToken);
+    http2.addHeader("Content-Type", "image/jpeg");
+    http2.addHeader("X-Device-Uptime-Ms", String((unsigned long long)uptimeMs));
+    http2.setTimeout(FRAME_POST_TIMEOUT_MS);
+    int retryCode = http2.POST(jpeg, len);
+    http2.end();
+    httpsLockGive();
+    if (retryCode != 200 && retryCode != 204) {
+      log_e("[FRAME] POST 失败 code=%d len=%u", retryCode, (unsigned)len);
+    }
+    return retryCode;
+  }
+  if (code < 0) {
+    // 其它网络/协议错误：仅打印日志，不回退
+    logTlsAndHttpError(http, code, "FRAME");
+  }
   http.end();
   httpsLockGive();
   if (code != 200 && code != 204) {
@@ -921,6 +1016,8 @@ void saveConfigToNVS(const String& ssid, const String& password,
   p.putString("server", server);
   p.putString("token", token);
   p.end();
+  // NVS 重配后复位 TLS 回退标记，让设备用新 server 重新尝试 TLS
+  httpsHandshakeFailed = false;
 }
 
 // 打印 NVS 中已存的配置（用于调试配网问题；password 仅打长度避免泄露）
@@ -1115,9 +1212,11 @@ void setup() {
   // 2.6 设备身份
   deviceId = generateDeviceId();
   Serial.printf("[DEV] deviceId=%s\n", deviceId.c_str());
-  Serial.printf("[NET] backend %s://%s:%u (control + video)\n",
+  Serial.printf("[NET] backend %s://%s:%u (useHttps=%d, fallbackReady=%d)\n",
                 useHttps ? "https" : "http",
-                backendHost.c_str(), backendPort);
+                backendHost.c_str(), backendPort,
+                useHttps ? 1 : 0,
+                httpsHandshakeFailed ? 0 : 1);
 
   // HTTPS 客户端：setInsecure() 跳过证书校验（TLS 由 nginx 反代统一处理；
   // 设备侧不再固定 CA，同时支持 http:// 直连后端与 https:// 经 nginx 双模式）

@@ -102,8 +102,9 @@ bun run dev        # 开发模式
 2. 安装依赖：`ESP32 Arduino` 核心 3.x、`ArduinoJson`；SD_MMC / WiFiClientSecure / WiFiClient / HTTPClient / time 已随核心自带
 3. 选板子 `ESP32S3 Dev Module`，启用 PSRAM，烧录
 4. 烧录后串口（115200）会进入配网等待状态，发送 `CONFIG\n` 可查询已存配置
-5. 通过前端 Web Serial 弹窗一键下发 `CONFIG|ssid=...|password=...|server=<scheme>://<host:port>|token=...` 至 NVS（`server` 字段需带 `http://` 或 `https://` scheme）；设备收到后自动重启并连接
-6. 参考引脚见 [camera_pins.h](firmware/Fnk0085-smart-car/camera_pins.h)；SD_MMC 引脚硬连线 CLK=39 / CMD=38 / D0=40（与 Freenove 板一致）
+5. 通过前端 Web Serial 弹窗一键下发 `CONFIG|ssid=...|password=...|server=<scheme>://<host:port>|token=...` 至 NVS（`server` 字段须带 `http://` 或 `https://` scheme）；设备收到后自动重启并连接
+6. **`server` scheme 与后端实际协议匹配**：直连后端明文 HTTP 用 `http://<host>:8080`；经 nginx 反代用 `https://<域名>`。若不匹配（如 NVS 残留 `https://` 但后端明文），固件首次 TLS 握手失败后会自动回退到明文 HTTP 重试（session 内 sticky），日志可见 `[TLS] lastErr=...` 与 `[HTTP] error=-1 ...`；建议生产环境配 nginx 反代用 HTTPS
+7. 参考引脚见 [camera_pins.h](firmware/Fnk0085-smart-car/camera_pins.h)；SD_MMC 引脚硬连线 CLK=39 / CMD=38 / D0=40（与 Freenove 板一致）
 
 ### 5. 访问
 

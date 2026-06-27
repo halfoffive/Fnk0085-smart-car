@@ -61,6 +61,14 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - 固件串口配网等待期发送单行 `CONFIG\n`（不带字段）可查询 NVS 中已存的 ssid / password 长度 / server / token；正常配网行格式见 `protocol.md` 第 4 节。
 - 前端 ConfigDialog 提交前对 `server` 字段做合规校验（须带 `http://` 或 `https://` scheme + hostname / IPv4 / `[IPv6]` + `:port`，端口范围 1-65535），非法时阻止提交。
 
+## Troubleshooting
+
+- **固件日志 `[NET] register failed code=-1 resp=` + 后端日志 `actix_http::h1::dispatcher stream error: request parse error: invalid Header provided`**：根因是 NVS 中 `server=https://<host>:<port>` 与后端明文 HTTP 不匹配，固件发 TLS ClientHello 到明文端口。三种解决方式：
+  1. **重新配网**：通过 Web Serial 下发 `CONFIG|...|server=http://<host>:<port>|...`，直连后端明文端口（最低延时，开发推荐）
+  2. **部署 nginx 反代**：nginx 终止 TLS 后反代到后端明文端口，固件 NVS 改 `server=https://<域名>`（生产推荐）
+  3. **固件已支持自动回退**：首次 TLS 握手失败（`HTTPClient` 返回 `-1`）后，固件自动用明文 `plainClient` 重试一次并置 `httpsHandshakeFailed = true`，后续请求 session 内 sticky 走明文；日志会打印 `[TLS] <tag> lastErr=<code> <buf>` 与 `[HTTP] <tag> error=-1 <errorToString>` 帮助诊断；NVS 重配或重启后复位
+- **固件日志 `[TLS] lastErr=-0x2700 ...`**：mbedTLS 错误码 `-0x2700` 是 `MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE`，常见于对端拒绝 TLS（如对端是明文 HTTP 服务）；`-0x7780` 是 `MBEDTLS_ERR_SSL_CONN_EOF`（对端关闭连接）。完整码表见 `mbedtls/error.h`
+
 ## 协议改动清单
 
 改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler（`device_api.rs` / `frame.rs`）、`frontend/src/**`、`protocol.md`。视频帧走 POST（`/api/device/{id}/frame`），body 原始 JPEG，header `Authorization` / `Content-Type` / `X-Device-Uptime-Ms`；协议版本 3。HTTP/HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步。
