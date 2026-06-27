@@ -192,8 +192,9 @@ fn build_rustls_server_config(
             .context("构造 rustls::ServerConfig 失败")?,
     };
 
-    // ALPN：HTTP/1.1 与 HTTP/2
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // ALPN：仅 HTTP/1.1。actix-http 未启用 http2 feature（低内存优先），
+    // 协商到 h2 会 panic；SSE/multipart 流式响应在 HTTP/1.1 下完全够用。
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Ok(config)
 }
