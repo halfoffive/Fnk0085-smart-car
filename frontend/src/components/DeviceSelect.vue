@@ -63,7 +63,7 @@ function formatLastSeen(ts: number): string {
           {{ loading ? '扫描设备中…' : '— 选择设备 —' }}
         </option>
         <option v-for="d in sorted" :key="d.deviceId" :value="d.deviceId">
-          {{ d.deviceId }} {{ d.online ? '● online' : '○ offline' }}
+          {{ d.deviceId }}
         </option>
       </select>
       <!-- 自定义箭头 -->

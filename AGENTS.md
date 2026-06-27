@@ -68,6 +68,8 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
   2. **部署 nginx 反代**：nginx 终止 TLS 后反代到后端明文端口，固件 NVS 改 `server=https://<域名>`（生产推荐）
   3. **固件已支持自动回退**：首次 TLS 握手失败（`HTTPClient` 返回 `-1`）后，固件自动用明文 `plainClient` 重试一次并置 `httpsHandshakeFailed = true`，后续请求 session 内 sticky 走明文；日志会打印 `[TLS] <tag> lastErr=<code> <buf>` 与 `[HTTP] <tag> error=-1 <errorToString>` 帮助诊断；NVS 重配或重启后复位
 - **固件日志 `[TLS] lastErr=-0x2700 ...`**：mbedTLS 错误码 `-0x2700` 是 `MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE`，常见于对端拒绝 TLS（如对端是明文 HTTP 服务）；`-0x7780` 是 `MBEDTLS_ERR_SSL_CONN_EOF`（对端关闭连接）。完整码表见 `mbedtls/error.h`
+- **前端 devtools 报 `404 {"deviceId":"%E2%97%8F%20online","error":"device not found"}`**：URL 解码 `%E2%97%8F%20online` = `● online`，根因是 `DeviceSelect.vue` 的 `<option>` textContent 附加了状态指示符 `● online` / `○ offline` 后缀，浏览器对 `<option :value>` 的边缘处理 fallback 到 textContent 时把整串 `● online` 当作 deviceId 提取。已修复：option textContent 简化为只显示 `d.deviceId`，状态指示符仅由 selectedDevice 状态条渲染；`frontend/src/lib/validate.ts` 的 `isValidDeviceId` 在 4 个 API 函数（postControl / postPhoto / getPwmCache / postPwmCache）+ videoWorker start 入口拦截非法 deviceId，非法时直接 throw 不发请求。
+- **固件日志 `[BOOT] setup done` 后立即出现 `ESP-ROM:esp32s3-20210327 / rst:0x1 (POWERON)`**：根因是 videoTask / pollTask 栈溢出（8192 字节不够 HTTPClient + WiFiClientSecure + TLS 握手栈占用）。已修复：`POLL_TASK_STACK` 与新增 `VIDEO_TASK_STACK` 常量均提升到 16384 字节；任务入口打印 `[TASK] video/poll started` 心跳；setup 末尾 `[BOOT] setup done` 之后校验任务句柄非 NULL，失败时打印 `[BOOT] task create failed, rebooting in 5s` 并延时重启，成功时打印 `[BOOT] tasks launched`。
 
 ## 协议改动清单
 

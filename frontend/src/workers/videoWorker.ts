@@ -5,6 +5,7 @@
 /// <reference lib="webworker" />
 
 import type { WorkerCommand, WorkerMessage } from '../types/protocol';
+import { isValidDeviceId } from '../lib/validate';
 
 let abortController: AbortController | null = null;
 let paused = false;
@@ -16,7 +17,16 @@ const MAX_BUFFER = 1024 * 1024; // 1 MiB
 self.addEventListener('message', (e: MessageEvent<WorkerCommand>) => {
   const msg = e.data;
   switch (msg.type) {
-    case 'start':
+    case 'start': {
+      // deviceId 合法性校验 — 拦截 option textContent 误传导致 404
+      if (!isValidDeviceId(msg.deviceId)) {
+        post({
+          type: 'status',
+          state: 'error',
+          message: `Invalid deviceId: ${msg.deviceId}`,
+        });
+        return;
+      }
       abortController?.abort();
       abortController = new AbortController();
       paused = false;
@@ -25,6 +35,7 @@ self.addEventListener('message', (e: MessageEvent<WorkerCommand>) => {
         post({ type: 'error', message: `stream failed: ${String(err)}` });
       });
       break;
+    }
     case 'stop':
       abortController?.abort();
       abortController = null;

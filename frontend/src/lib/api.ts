@@ -1,6 +1,7 @@
 // fetch 封装 — 所有 HTTP API 调用集中于此（参考 protocol.md §4）
 
 import { API_BASE } from './constants';
+import { isValidDeviceId } from './validate';
 import type {
   ControlRequest,
   ControlResponse,
@@ -40,6 +41,9 @@ export async function postControl(
   body: ControlRequest,
   signal?: AbortSignal,
 ): Promise<ControlResponse> {
+  if (!isValidDeviceId(deviceId)) {
+    throw new Error(`Invalid deviceId: ${deviceId}`);
+  }
   const res = await fetch(url(`/api/control/${encodeURIComponent(deviceId)}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -54,6 +58,9 @@ export async function postPhoto(
   deviceId: string,
   signal?: AbortSignal,
 ): Promise<PhotoResponse> {
+  if (!isValidDeviceId(deviceId)) {
+    throw new Error(`Invalid deviceId: ${deviceId}`);
+  }
   const res = await fetch(url(`/api/photo/${encodeURIComponent(deviceId)}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -68,6 +75,9 @@ export async function getPwmCache(
   deviceId: string,
   signal?: AbortSignal,
 ): Promise<PwmCacheState> {
+  if (!isValidDeviceId(deviceId)) {
+    throw new Error(`Invalid deviceId: ${deviceId}`);
+  }
   const res = await fetch(url(`/api/pwm_cache/${encodeURIComponent(deviceId)}`), {
     method: 'GET',
     headers: { Accept: 'application/json' },
@@ -82,6 +92,9 @@ export async function postPwmCache(
   body: PwmCacheToggleRequest,
   signal?: AbortSignal,
 ): Promise<ControlResponse> {
+  if (!isValidDeviceId(deviceId)) {
+    throw new Error(`Invalid deviceId: ${deviceId}`);
+  }
   const res = await fetch(url(`/api/pwm_cache/${encodeURIComponent(deviceId)}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
