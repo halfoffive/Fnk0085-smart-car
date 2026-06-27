@@ -35,6 +35,8 @@
 #include <esp_efuse.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/sha256.h>
+// 目标板：Freenove ESP32-S3 WROOM（含摄像头），对应 esp-camera 的 ESP32S3_EYE 引脚映射
+#define CAMERA_MODEL_ESP32S3_EYE
 #include "camera_pins.h"
 
 /* =================================================================
