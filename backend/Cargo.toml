@@ -1,0 +1,46 @@
+[package]
+name = "fnk0085-smart-car-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Fnk0085 智能小车后端：基于 actix-http v3.13.1 的低内存多设备转发服务"
+license = "MIT"
+
+[[bin]]
+name = "fnk0085-smart-car-backend"
+path = "src/main.rs"
+
+[dependencies]
+# 直接基于 actix-http，避免引入 actix-web 全套以控制内存
+actix-http = { version = "3.13.1", features = ["rustls-0_23", "compress-gzip"] }
+actix-server = "2"
+actix-service = "2"
+actix-rt = "2"
+# actix-tls 提供 rustls 0.23 的 ServerBuilderExt::bind_rustls_0_23
+actix-tls = { version = "3", features = ["rustls-0_23"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+include_dir = "0.7"
+aes-gcm = "0.10"
+sha2 = "0.10"
+bytes = "1"
+flate2 = "1"
+log = "0.4"
+env_logger = "0.11"
+rcgen = "0.13"
+rustls = "0.23"
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
+anyhow = "1"
+thiserror = "1"
+parking_lot = "0.12"
+dashmap = "6"
+futures = "0.3"
+mime_guess = "2"
+
+[profile.release]
+# 单核 1G 服务器适配：体积优先 + LTO + 去符号
+opt-level = "z"
+codegen-units = 1
+lto = true
+strip = true

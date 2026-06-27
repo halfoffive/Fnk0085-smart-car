@@ -1,0 +1,20 @@
+{
+  "name": "Fnk0085 智能小车控制台",
+  "short_name": "Fnk0085",
+  "description": "ESP32-S3 智能小车远程控制 PWA：视频流 / WASD 调速 / 拍照 / Web Serial 配网",
+  "theme_color": "#0a0a0a",
+  "background_color": "#0a0a0a",
+  "display": "standalone",
+  "orientation": "landscape",
+  "start_url": "/",
+  "scope": "/",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

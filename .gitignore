@@ -1,0 +1,41 @@
+# Rust
+backend/target/
+target/
+
+# Node
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+
+# Build artifacts
+build/
+*.log
+*.tsbuildinfo
+
+# 测试运行时下载的依赖（Playwright driver/browsers、Python 包）
+**/tests/.pylibs/
+**/tests/.browsers/
+**/__pycache__/
+*.pyc
+
+# 运行时配置（含 token/SSL 路径等敏感字段）
+*.jsonc
+!protocol.md
+
+# 证书与密钥
+*.pem
+*.crt
+*.key
+*.p12
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Trae 工作目录（spec / 临时文件）
+.trae/

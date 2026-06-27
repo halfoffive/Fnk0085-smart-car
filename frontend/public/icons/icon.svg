@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Fnk0085">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0a0a"/>
+      <stop offset="100%" stop-color="#141414"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00ff88"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1f1f1f" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <rect width="512" height="512" fill="url(#grid)" opacity="0.6"/>
+  <!-- 顶部状态条 -->
+  <rect x="48" y="64" width="416" height="6" rx="3" fill="url(#accent)" opacity="0.9"/>
+  <!-- 车体简化轮廓 -->
+  <g transform="translate(256 280)" fill="none" stroke="#00ff88" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="-120" y="-50" width="240" height="100" rx="14"/>
+    <line x1="-90" y1="-50" x2="-90" y2="50"/>
+    <line x1="90" y1="-50" x2="90" y2="50"/>
+  </g>
+  <!-- 轮子 -->
+  <g fill="#f59e0b">
+    <rect x="100" y="220" width="40" height="80" rx="6"/>
+    <rect x="372" y="220" width="40" height="80" rx="6"/>
+  </g>
+  <!-- 信号波 -->
+  <g stroke="#00ff88" stroke-width="8" fill="none" stroke-linecap="round">
+    <path d="M 96 120 Q 96 96 120 96"/>
+    <path d="M 72 120 Q 72 72 120 72" opacity="0.7"/>
+    <path d="M 48 120 Q 48 48 120 48" opacity="0.4"/>
+  </g>
+  <!-- 文字 -->
+  <text x="256" y="430" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="44" font-weight="700" fill="#e5e5e5" letter-spacing="4">Fnk0085</text>
+  <text x="256" y="465" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="14" fill="#737373" letter-spacing="6">SMART·CAR·CONSOLE</text>
+</svg>

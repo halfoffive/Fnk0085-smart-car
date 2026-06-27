@@ -1,0 +1,33 @@
+PASS	page_load	title='Fnk0085 // Smart Car Console'
+PASS	title_contains_fnk0085	Fnk0085 // Smart Car Console
+PASS	device_select_visible	first option='— 选择设备 —'
+PASS	wasd_button_W	sub='fwd' visible
+PASS	wasd_button_A	sub='left' visible
+PASS	wasd_button_S	sub='back' visible
+PASS	wasd_button_D	sub='right' visible
+PASS	throttle_slider_1_100	min=1, max=100
+PASS	photo_button	capture photo visible
+PASS	config_button	打开配网弹窗 visible
+PASS	pwm_cache_toggle	role=switch visible
+PASS	screenshot_ui	d:\工作目录\Fnk0085-smart-car\test-screenshots\ui.png
+PASS	sw_ready	navigator.serviceWorker.ready resolved
+PASS	sw_controller	controller present
+PASS	sw_precache_populated	caches=['fnk0085-v0.1.0-precache-v2'], matched=['fnk0085-v0.1.0-precache-v2'], controller=http://127.0.0.1:5180/sw.js
+PASS	sw_worker_logs	[serviceworker console.log] [Fnk0085 SW] install v0.1.0 | [serviceworker console.log] [Fnk0085 SW] activate v0.1.0, cleaned 1 old caches | [serviceworker console.log] [Fnk0085 SW] install v0.1.0 | [serviceworker console.log] [Fnk0085 SW] activate v0.1.0, cleaned 1 old caches
+PASS	offline_reload	reload commit ok [native SW]
+PASS	offline_not_blank	#root innerHTML length=11454
+PASS	offline_title	title='Fnk0085 // Smart Car Console'
+PASS	offline_brand_visible	Fnk0085 brand visible
+PASS	offline_device_select	select still visible offline
+PASS	offline_wasd_W	sub='fwd' visible
+PASS	offline_wasd_A	sub='left' visible
+PASS	offline_wasd_S	sub='back' visible
+PASS	offline_wasd_D	sub='right' visible
+PASS	offline_slider	throttle slider visible
+PASS	screenshot_offline	d:\工作目录\Fnk0085-smart-car\test-screenshots\offline_fixed.png
+
+# console errors (informational):
+CONSOLE_ERR	[page console.error] Failed to load resource: the server responded with a status of 404 (File not found)
+CONSOLE_ERR	[page console.error] Failed to load resource: the server responded with a status of 404 (File not found)
+CONSOLE_ERR	[page console.error] Failed to load resource: the server responded with a status of 404 (File not found)
+CONSOLE_ERR	[page console.error] Failed to load resource: the server responded with a status of 404 (File not found)

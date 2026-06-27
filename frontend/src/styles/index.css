@@ -1,0 +1,297 @@
+@import 'tailwindcss';
+
+/*
+ * Fnk0085 智能小车控制台 — 工业控制台美学
+ * 主题：深色工业基底 + 单一霓虹绿强调色 + 琥珀色辅助点缀
+ * 字体：JetBrains Mono（display） + IBM Plex Sans（body）
+ */
+
+@theme {
+  /* 颜色系统：深色工业灰阶 + 单一强调色 */
+  --color-base: #0a0a0a;
+  --color-surface: #111111;
+  --color-surface-2: #161616;
+  --color-elevated: #1c1c1c;
+  --color-border: #242424;
+  --color-border-bright: #2f2f2f;
+
+  --color-ink: #e8e8e8;
+  --color-ink-dim: #9a9a9a;
+  --color-ink-faint: #5a5a5a;
+
+  /* 强调色：电光绿（主操作 / 在线 / 数据流） */
+  --color-accent: #00ff88;
+  --color-accent-dim: #00cc6e;
+  --color-accent-glow: rgba(0, 255, 136, 0.35);
+
+  /* 辅助强调：琥珀（警示 / 拍照 / 延时高值） */
+  --color-amber: #f59e0b;
+  --color-amber-dim: #b8740a;
+  --color-amber-glow: rgba(245, 158, 11, 0.35);
+
+  /* 危险：停止 / 错误 */
+  --color-danger: #ff3366;
+  --color-danger-dim: #cc2952;
+
+  /* 字体 */
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* 动画时长 */
+  --ease-snap: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-press: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 全局重置 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  /* 全局背景：极细网格 + 噪点叠加 */
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* 字体子集类 */
+.font-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: 'ss01', 'ss02', 'cv01', 'cv02';
+}
+.font-sans {
+  font-family: var(--font-sans);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-bright);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
+}
+
+/* 选区 */
+::selection {
+  background: var(--color-accent);
+  color: #000;
+}
+
+/* ============ 自定义工具类 ============ */
+
+/* 视频流扫描线动效 */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+.scanline::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 255, 136, 0.04) 49%,
+    rgba(0, 255, 136, 0.08) 50%,
+    rgba(0, 255, 136, 0.04) 51%,
+    transparent 100%
+  );
+  animation: scanline 6s linear infinite;
+  mix-blend-mode: screen;
+}
+
+/* 骨架脉冲 */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.15; }
+}
+.skeleton {
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+/* 加载圈：conic-gradient 旋转 */
+@keyframes conic-spin {
+  to { transform: rotate(360deg); }
+}
+.conic-spinner {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--color-amber) 90deg,
+    var(--color-accent) 180deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(circle, transparent 56%, #000 58%);
+  mask: radial-gradient(circle, transparent 56%, #000 58%);
+  animation: conic-spin 0.9s linear infinite;
+}
+
+/* 在线状态点呼吸 */
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 var(--color-accent-glow); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.8s ease-out infinite;
+}
+
+/* WASD 按键发光 */
+@keyframes key-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--color-accent-glow), inset 0 0 0 1px var(--color-border-bright); }
+  50% { box-shadow: 0 0 16px 2px var(--color-accent-glow), inset 0 0 0 1px var(--color-accent); }
+}
+.key-active {
+  animation: key-glow 1.2s ease-in-out infinite;
+}
+
+/* 数字闪烁 */
+@keyframes digit-flicker {
+  0%, 96%, 100% { opacity: 1; }
+  97% { opacity: 0.65; }
+  98% { opacity: 0.9; }
+}
+.digit-flicker {
+  animation: digit-flicker 4s linear infinite;
+}
+
+/* 边角十字准星装饰 */
+.corner-crosshair::before,
+.corner-crosshair::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: var(--color-accent);
+  border-style: solid;
+  pointer-events: none;
+}
+.corner-crosshair::before {
+  top: 6px;
+  left: 6px;
+  border-width: 1px 0 0 1px;
+}
+.corner-crosshair::after {
+  bottom: 6px;
+  right: 6px;
+  border-width: 0 1px 1px 0;
+}
+
+/* 滑块自定义 */
+.range-track {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+.range-track::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(to right, var(--color-accent) var(--pct, 0%), var(--color-border-bright) var(--pct, 0%));
+  border-radius: 2px;
+}
+.range-track::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-base);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 10px var(--color-accent-glow);
+  cursor: grab;
+  transition: transform 0.15s var(--ease-press);
+}
+.range-track::-webkit-slider-thumb:active {
+  transform: scale(1.15);
+  cursor: grabbing;
+}
+.range-track::-moz-range-track {
+  height: 4px;
+  background: var(--color-border-bright);
+  border-radius: 2px;
+}
+.range-track::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-base);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 10px var(--color-accent-glow);
+  cursor: grab;
+}
+
+/* 切换开关 */
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--color-border-bright);
+  transition: background 0.2s var(--ease-snap);
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+.toggle-switch::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-ink-dim);
+  transition: transform 0.2s var(--ease-snap), background 0.2s var(--ease-snap);
+}
+.toggle-switch[aria-checked='true'] {
+  background: var(--color-accent);
+}
+.toggle-switch[aria-checked='true']::before {
+  transform: translateX(18px);
+  background: var(--color-base);
+}
+
+/* 数据条/光柱 */
+.bar-fill {
+  background: linear-gradient(90deg, var(--color-accent-dim), var(--color-accent));
+  box-shadow: 0 0 8px var(--color-accent-glow);
+}
+
+/* 文本截断 */
+.truncate-mono {
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Toast 入场 */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.toast-in {
+  animation: toast-in 0.25s var(--ease-press);
+}
