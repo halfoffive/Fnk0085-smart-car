@@ -90,9 +90,8 @@ fn frame_stream(
 
 /// 构造单个 multipart part 字节
 fn build_part(jpeg: &Bytes, latency_ms: u64) -> Bytes {
-    let header = format!(
-        "--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nX-Latency-Ms: {latency_ms}\r\n\r\n"
-    );
+    let header =
+        format!("--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nX-Latency-Ms: {latency_ms}\r\n\r\n");
     let trailer = "\r\n";
     let mut out = Vec::with_capacity(header.len() + jpeg.len() + trailer.len());
     out.extend_from_slice(header.as_bytes());

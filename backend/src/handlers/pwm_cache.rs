@@ -41,9 +41,18 @@ pub struct PwmCacheToggleResponse {
 /// 默认档位表（设备固件侧常量）
 fn default_entries() -> Vec<PwmCacheEntry> {
     vec![
-        PwmCacheEntry { speed: "low", pwm: 120 },
-        PwmCacheEntry { speed: "mid", pwm: 180 },
-        PwmCacheEntry { speed: "high", pwm: 255 },
+        PwmCacheEntry {
+            speed: "low",
+            pwm: 120,
+        },
+        PwmCacheEntry {
+            speed: "mid",
+            pwm: 180,
+        },
+        PwmCacheEntry {
+            speed: "high",
+            pwm: 255,
+        },
     ]
 }
 

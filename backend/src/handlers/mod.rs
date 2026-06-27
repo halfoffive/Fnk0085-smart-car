@@ -25,7 +25,11 @@ pub async fn route(req: Request, state: AppState) -> Result<AppResponse, Infalli
     let head = req.head();
     let method = head.method.clone();
     let path = head.uri.path().to_string();
-    let accept_gzip = accepts_gzip(head.headers.get("accept-encoding").and_then(|v| v.to_str().ok()));
+    let accept_gzip = accepts_gzip(
+        head.headers
+            .get("accept-encoding")
+            .and_then(|v| v.to_str().ok()),
+    );
 
     if let Some(resp) = try_route_api(&method, &path, req, &state, accept_gzip).await {
         return Ok(resp);
@@ -152,7 +156,11 @@ pub fn gzip_bytes(data: &[u8]) -> Vec<u8> {
 }
 
 /// JSON 响应构造辅助（可选 gzip）
-pub fn json_response<T: serde::Serialize>(status: StatusCode, val: &T, accept_gzip: bool) -> AppResponse {
+pub fn json_response<T: serde::Serialize>(
+    status: StatusCode,
+    val: &T,
+    accept_gzip: bool,
+) -> AppResponse {
     let body = serde_json::to_vec(val).unwrap_or_default();
     let mut builder = Response::build(status);
     builder

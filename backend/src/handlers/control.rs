@@ -80,9 +80,5 @@ pub async fn handle_post_control(
         log::warn!("出站指令通道已关闭（设备 {device_id} 的 control 被丢弃）");
     }
 
-    json_response(
-        StatusCode::OK,
-        &ControlResponse { ok: true },
-        accept_gzip,
-    )
+    json_response(StatusCode::OK, &ControlResponse { ok: true }, accept_gzip)
 }

@@ -160,18 +160,23 @@ fn strip_jsonc_comments(input: &str) -> String {
     out
 }
 
+/// TLS 材料：服务端证书链 PEM + 私钥 PEM + 可选客户端 CA PEM
+pub type TlsMaterials = (Vec<u8>, Vec<u8>, Option<Vec<u8>>);
+
 /// 加载或自签生成 TLS 服务端证书与客户端 CA（若配置启用 mTLS）。
 ///
 /// 返回 (cert_chain_pem, key_pem, client_ca_pem_opt)。
 /// 若文件已存在则直接读取；否则用 rcgen 自签生成并落盘。
-pub fn load_or_generate_tls_materials(cfg: &AuthConfig) -> Result<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> {
+pub fn load_or_generate_tls_materials(cfg: &AuthConfig) -> Result<TlsMaterials> {
     let cert_path = Path::new(&cfg.tls_cert);
     let key_path = Path::new(&cfg.tls_key);
     if cert_path.exists() && key_path.exists() {
         let cert = std::fs::read(cert_path).context("读取 tls_cert 失败")?;
         let key = std::fs::read(key_path).context("读取 tls_key 失败")?;
         let ca = match &cfg.client_ca {
-            Some(p) if Path::new(p).exists() => Some(std::fs::read(p).context("读取 client_ca 失败")?),
+            Some(p) if Path::new(p).exists() => {
+                Some(std::fs::read(p).context("读取 client_ca 失败")?)
+            }
             _ => None,
         };
         return Ok((cert, key, ca));
@@ -187,7 +192,15 @@ pub fn load_or_generate_tls_materials(cfg: &AuthConfig) -> Result<(Vec<u8>, Vec<
         ensure_parent(Path::new(ca_ref))?;
         std::fs::write(ca_ref, &ca).context("写入 client_ca 失败")?;
     }
-    Ok((cert, key, if cfg.client_ca.is_some() { Some(ca) } else { None }))
+    Ok((
+        cert,
+        key,
+        if cfg.client_ca.is_some() {
+            Some(ca)
+        } else {
+            None
+        },
+    ))
 }
 
 fn ensure_parent(p: &Path) -> Result<()> {
@@ -203,7 +216,7 @@ fn ensure_parent(p: &Path) -> Result<()> {
 /// 返回 (server_cert_pem, server_key_pem, client_ca_pem)。
 /// rcgen 0.13 API：CertificateParams::self_signed / signed_by 直接生成 Certificate。
 fn gen_self_signed_pair(_cfg: &AuthConfig) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, BasicConstraints, KeyPair};
+    use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
 
     // 1. CA 参数（用于客户端 mTLS 校验）
     let mut ca_params = CertificateParams::new(Vec::<String>::new())

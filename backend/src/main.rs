@@ -39,10 +39,9 @@ async fn main() -> Result<()> {
     let cfg = Config::load_or_init(&config_path)?;
 
     // 2. 初始化 logger
-    let _ = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(&cfg.log_level),
-    )
-    .try_init();
+    let _ =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&cfg.log_level))
+            .try_init();
 
     log::info!(
         "Fnk0085 后端启动中：HTTP {} UDP {}",
@@ -51,8 +50,7 @@ async fn main() -> Result<()> {
     );
 
     // 3. 加载或自签 TLS 证书
-    let (cert_pem, key_pem, ca_pem) =
-        config::load_or_generate_tls_materials(&cfg.auth)?;
+    let (cert_pem, key_pem, ca_pem) = config::load_or_generate_tls_materials(&cfg.auth)?;
 
     // 4. 派生 AEAD 密钥（不可变句柄）
     let key = Arc::new(derive_key(&cfg.auth.token));
@@ -74,8 +72,6 @@ async fn main() -> Result<()> {
         key: key.clone(),
         expected_token: expected_token.clone(),
         cmd_sink,
-        video_cache_capacity: 16,
-        video_max_recent: 8,
     };
 
     // 7. 启动 UDP 监听任务
@@ -121,7 +117,7 @@ async fn main() -> Result<()> {
                 .rustls_0_23(config)
                 .map_err(|e| {
                     log::error!("HTTP 服务错误: {e:?}");
-                    std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}"))
+                    std::io::Error::other(format!("{e:?}"))
                 })
         })?
         .workers(num_cpus()) // worker 数 = CPU 核数
@@ -147,10 +143,9 @@ fn build_rustls_server_config(
 
     // 解析证书链（&[u8] 实现 BufRead，需可变绑定以供 reader 推进游标）
     let mut cert_reader = cert_pem;
-    let cert_chain: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut cert_reader)
-            .collect::<Result<Vec<_>, _>>()
-            .context("解析 TLS 证书 PEM 失败")?;
+    let cert_chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .context("解析 TLS 证书 PEM 失败")?;
 
     if cert_chain.is_empty() {
         anyhow::bail!("TLS 证书链为空");

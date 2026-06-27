@@ -60,7 +60,7 @@ impl AeadKey {
             return Err(CryptoError::CiphertextTooShort(NONCE_LEN + TAG_LEN));
         }
         let (nonce_bytes, ct) = wire.split_at(NONCE_LEN);
-        let nonce = Nonce::from_slice(nonce_bytes.try_into().unwrap());
+        let nonce = Nonce::from_slice(nonce_bytes);
         match self.cipher.decrypt(nonce, ct) {
             Ok(pt) => Ok(bytes::Bytes::from(pt)),
             Err(_) => Err(CryptoError::DecryptFailed),
@@ -76,11 +76,6 @@ pub fn derive_key(token: &str) -> AeadKey {
     let mut raw = [0u8; KEY_LEN];
     raw.copy_from_slice(&digest[..KEY_LEN]);
     AeadKey::from_bytes(&raw)
-}
-
-/// 便利函数：用 token 派生密钥后加密
-pub fn seal(plain: &[u8], key: &AeadKey, nonce: &[u8; NONCE_LEN]) -> bytes::Bytes {
-    key.seal(nonce, plain)
 }
 
 /// 便利函数：用 token 派生密钥后解密

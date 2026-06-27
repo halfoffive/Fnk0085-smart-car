@@ -7,8 +7,7 @@ use bytes::Bytes;
 use include_dir::{include_dir, Dir};
 
 /// 内嵌的前端 dist 目录（路径相对 Cargo.toml）
-static FRONTEND_DIST: Dir<'static> =
-    include_dir!("$CARGO_MANIFEST_DIR/../frontend/dist");
+static FRONTEND_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../frontend/dist");
 
 /// 静态文件查询结果
 pub struct StaticAsset {
@@ -29,7 +28,7 @@ pub fn lookup(path: &str) -> Option<StaticAsset> {
     } else {
         FRONTEND_DIST.get_file(normalized).or_else(|| {
             // 顶层路径（无扩展名且不在 assets 下）→ 尝试作为目录 index
-            FRONTEND_DIST.get_file(&format!("{normalized}/index.html"))
+            FRONTEND_DIST.get_file(format!("{normalized}/index.html"))
         })
     }?;
     let bytes = file.contents();

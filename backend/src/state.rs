@@ -19,8 +19,4 @@ pub struct AppState {
     pub expected_token: Arc<String>,
     /// 出站指令通道（handlers → UDP 出站循环）
     pub cmd_sink: CommandSink,
-    /// 视频缓存配置（每设备帧环形缓存容量）
-    pub video_cache_capacity: usize,
-    /// 视频缓存最大保留帧数
-    pub video_max_recent: usize,
 }

@@ -11,7 +11,6 @@ use crate::device::{now_ms, DeviceRegistry, OutboundCommand, PhotoResult};
 use crate::protocol::{parse_packet, DeviceEvent, FrameReassembler};
 use crate::video_cache::Frame;
 use anyhow::{Context, Result};
-use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,7 +57,8 @@ async fn inbound_loop(
     let mut buf = vec![0u8; 65536];
     // 每设备一个重组器（本地状态，避免锁）
     let mut reassemblers: HashMap<String, FrameReassembler> = HashMap::new();
-    let mut idle_ticks: u64;
+    // 自上次重组器清理以来收到的包数；每 1024 包清理一次防内存泄漏
+    let mut ticks_since_evict: u64 = 0;
 
     loop {
         let (n, src) = match sock.recv_from(&mut buf).await {
@@ -68,7 +68,6 @@ async fn inbound_loop(
                 continue;
             }
         };
-        idle_ticks = 0;
         let wire = &buf[..n];
 
         // AEAD 解密；失败直接丢弃（避免伪造流量放大）
@@ -83,19 +82,19 @@ async fn inbound_loop(
         // 先尝试作为视频子包解析
         if let Ok(pkt) = parse_packet(&plain) {
             handle_video_packet(&pkt, src, &registry, &mut reassemblers);
-            continue;
-        }
-        // 否则作为 JSON 事件解析
-        match serde_json::from_slice::<DeviceEvent>(&plain) {
-            Ok(event) => handle_event(event, src, &registry, &expected_token),
-            Err(e) => {
-                log::debug!("无法解析 UDP 明文（既非视频也非事件）：{e}");
+        } else {
+            // 否则作为 JSON 事件解析
+            match serde_json::from_slice::<DeviceEvent>(&plain) {
+                Ok(event) => handle_event(event, src, &registry, &expected_token),
+                Err(e) => {
+                    log::debug!("无法解析 UDP 明文（既非视频也非事件）：{e}");
+                }
             }
         }
 
         // 偶尔清理重组器（防止僵尸帧占内存）
-        idle_ticks += 1;
-        if idle_ticks % 1024 == 0 {
+        ticks_since_evict = ticks_since_evict.wrapping_add(1);
+        if ticks_since_evict.is_multiple_of(1024) {
             for r in reassemblers.values_mut() {
                 r.evict_older_than(now_ms());
             }
@@ -120,11 +119,10 @@ fn handle_video_packet(
     entry.touch(Some(src), now_ms());
 
     let reassembler = reassemblers.entry(pkt.device_id.clone()).or_default();
-    if let Some(full_jpeg) = reassembler.push(pkt) {
+    if let Some(jpeg) = reassembler.push(pkt) {
         let frame = Frame {
-            uptime_ms: pkt.uptime_ms,
             server_recv_ms: now_ms(),
-            jpeg: Bytes::from(full_jpeg),
+            jpeg,
         };
         entry.video.push(frame);
     }
@@ -152,11 +150,11 @@ fn handle_event(
                 Err(e) => log::warn!("设备 {device_id} 注册失败: {e}"),
             }
         }
-        DeviceEvent::PhotoDone { path, uptime_ms } => {
+        DeviceEvent::PhotoDone { path, uptime_ms: _ } => {
             // 注意：JSON 事件未携带 deviceId，需依赖 src → 设备反查
             // 简化：遍历最近一次心跳匹配 src 的设备
             if let Some(entry) = find_device_by_addr(registry, src) {
-                let ok = entry.complete_photo(PhotoResult { path: path.clone(), uptime_ms });
+                let ok = entry.complete_photo(PhotoResult { path: path.clone() });
                 if ok {
                     log::info!("设备 {} 拍照完成: {path}", entry.device_id);
                 } else {
@@ -182,7 +180,10 @@ fn validate_token(received: &str, expected: &str) -> bool {
 }
 
 /// 通过 UDP 源地址反查设备（仅用于 photo_done 等 JSON 事件）。
-fn find_device_by_addr(registry: &DeviceRegistry, addr: SocketAddr) -> Option<std::sync::Arc<crate::device::DeviceEntry>> {
+fn find_device_by_addr(
+    registry: &DeviceRegistry,
+    addr: SocketAddr,
+) -> Option<std::sync::Arc<crate::device::DeviceEntry>> {
     for entry in registry.list().into_iter() {
         if let Some(e) = registry.get(&entry.device_id) {
             if e.get_addr() == Some(addr) {
@@ -248,7 +249,10 @@ mod tests {
     #[test]
     fn token_validation() {
         assert!(validate_token("change-me-please", "change-me-please"));
-        assert!(validate_token("Bearer change-me-please", "change-me-please"));
+        assert!(validate_token(
+            "Bearer change-me-please",
+            "change-me-please"
+        ));
         assert!(!validate_token("wrong", "change-me-please"));
         assert!(!validate_token("Bearer wrong", "change-me-please"));
     }

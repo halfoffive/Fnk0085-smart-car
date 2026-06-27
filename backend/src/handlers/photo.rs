@@ -39,10 +39,7 @@ pub async fn handle_post_photo(
     // 注册 oneshot 等待器
     let (tx, rx) = oneshot::channel::<PhotoResult>();
     if !entry.await_photo(tx) {
-        return crate::handlers::bad_request(
-            "已有拍照请求挂起，请等待完成",
-            accept_gzip,
-        );
+        return crate::handlers::bad_request("已有拍照请求挂起，请等待完成", accept_gzip);
     }
 
     // 下发 photo 指令
@@ -80,7 +77,6 @@ pub async fn handle_post_photo(
             // 超时：清理挂起的等待器
             entry.complete_photo(PhotoResult {
                 path: String::new(),
-                uptime_ms: 0,
             });
             photo_timeout(accept_gzip)
         }

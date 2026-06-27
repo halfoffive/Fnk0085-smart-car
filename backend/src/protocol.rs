@@ -8,7 +8,6 @@
 //! 全部小端序。`parse_packet` 为纯函数；`FrameReassembler` 维护状态用于按
 //! (deviceId, frameSeq) 重组 8 分包为完整 JPEG。
 
-use crate::crypto;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -151,16 +150,15 @@ struct ReassemblingFrame {
 }
 
 impl FrameReassembler {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// 投入一个子包；当 8 个分包全部到齐时返回完整 JPEG（按 partIdx 顺序拼接）。
     pub fn push(&mut self, pkt: &Packet) -> Option<Bytes> {
-        let frame = self.frames.entry(pkt.frame_seq).or_insert_with(|| ReassemblingFrame {
-            parts: (0..pkt.part_total).map(|_| None).collect(),
-            received: 0,
-        });
+        let frame = self
+            .frames
+            .entry(pkt.frame_seq)
+            .or_insert_with(|| ReassemblingFrame {
+                parts: (0..pkt.part_total).map(|_| None).collect(),
+                received: 0,
+            });
         let idx = pkt.part_idx as usize;
         if idx >= frame.parts.len() {
             return None;
@@ -172,10 +170,8 @@ impl FrameReassembler {
         if frame.received == pkt.part_total {
             // 全部到齐，按 partIdx 顺序拼接
             let mut full = Vec::with_capacity(frame.parts.len() * 1024);
-            for part in frame.parts.drain(..) {
-                if let Some(b) = part {
-                    full.extend_from_slice(&b);
-                }
+            for b in frame.parts.drain(..).flatten() {
+                full.extend_from_slice(&b);
             }
             self.frames.remove(&pkt.frame_seq);
             return Some(Bytes::from(full));
@@ -199,7 +195,11 @@ impl FrameReassembler {
 // 例：`Register { device_id }` → JSON `{"type":"register","deviceId":...}`。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum DeviceEvent {
     Register { device_id: String, token: String },
     PhotoDone { path: String, uptime_ms: u64 },
@@ -210,7 +210,11 @@ pub enum DeviceEvent {
 // ===== JSON 指令（后端 → 设备） =====
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum DeviceCommand {
     Control {
         direction: String,
@@ -218,23 +222,18 @@ pub enum DeviceCommand {
         duration_ms: Option<u32>,
         ts: u64,
     },
-    Photo { quality: String, ts: u64 },
-    PwmCache { enabled: bool, ts: u64 },
-    Ping { seq: u32, ts: u64 },
-}
-
-/// 计算端到端延迟（设备 uptime 与服务端时间差，用于诊断）。
-/// 纯函数。
-pub fn compute_latency_ms(device_uptime_ms: u64, server_now_ms: u64) -> u64 {
-    // 设备 uptime 与服务端时钟非同一原点；这里仅做差值参考。
-    // 真实场景需先在 register 阶段对齐两者偏移量，本实现保留接口。
-    server_now_ms.saturating_sub(device_uptime_ms)
-}
-
-/// 用 token 派生的密钥加密一个明文子包字节流。
-/// 主要是为了对称的 API；实际设备上行用 AEAD 加密，后端解密。
-pub fn encrypt_packet(plain: &[u8], key: &crypto::AeadKey, nonce: &[u8; 12]) -> bytes::Bytes {
-    crypto::seal(plain, key, nonce)
+    Photo {
+        quality: String,
+        ts: u64,
+    },
+    PwmCache {
+        enabled: bool,
+        ts: u64,
+    },
+    Ping {
+        seq: u32,
+        ts: u64,
+    },
 }
 
 #[cfg(test)]
@@ -275,12 +274,15 @@ mod tests {
     fn rejects_bad_magic() {
         let mut bytes = build_packet(0, b"x");
         bytes[0] = 0x00;
-        assert!(matches!(parse_packet(&bytes), Err(ProtocolError::BadMagic(_))));
+        assert!(matches!(
+            parse_packet(&bytes),
+            Err(ProtocolError::BadMagic(_))
+        ));
     }
 
     #[test]
     fn reassembles_full_frame() {
-        let mut r = FrameReassembler::new();
+        let mut r = FrameReassembler::default();
         let mut last = None;
         for i in 0..PART_TOTAL {
             let payload = vec![i; 16];
@@ -294,7 +296,7 @@ mod tests {
 
     #[test]
     fn handles_out_of_order_parts() {
-        let mut r = FrameReassembler::new();
+        let mut r = FrameReassembler::default();
         // 乱序提交
         let order = [3u8, 0, 7, 1, 5, 2, 6, 4];
         let mut produced = None;

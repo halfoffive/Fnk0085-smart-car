@@ -6,16 +6,13 @@
 
 use bytes::Bytes;
 use parking_lot::RwLock;
-use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// 单帧视频（设备 uptime + JPEG 字节 + 服务端接收时间戳）
+/// 单帧视频（JPEG 字节 + 服务端接收时间戳）
 #[derive(Debug, Clone)]
 pub struct Frame {
-    /// 设备系统运行时间（ms），用于估算端到端延迟
-    pub uptime_ms: u64,
     /// 服务端接收此帧时的 wall-clock ms
     pub server_recv_ms: u64,
     /// JPEG 完整字节
@@ -70,24 +67,6 @@ impl VideoCache {
     }
 }
 
-/// 视频帧摘要（用于 HTTP /api/diagnostics 等）
-#[derive(Debug, Serialize)]
-pub struct FrameSummary {
-    pub uptime_ms: u64,
-    pub server_recv_ms: u64,
-    pub jpeg_len: usize,
-}
-
-impl From<&Frame> for FrameSummary {
-    fn from(f: &Frame) -> Self {
-        Self {
-            uptime_ms: f.uptime_ms,
-            server_recv_ms: f.server_recv_ms,
-            jpeg_len: f.jpeg.len(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,7 +77,6 @@ mod tests {
         let mut sub1 = cache.subscribe();
         let mut sub2 = cache.subscribe();
         cache.push(Frame {
-            uptime_ms: 1,
             server_recv_ms: 100,
             jpeg: Bytes::from_static(b"abc"),
         });
@@ -114,13 +92,12 @@ mod tests {
         let cache = VideoCache::new(8, 3);
         for i in 0..10u64 {
             cache.push(Frame {
-                uptime_ms: i,
                 server_recv_ms: i,
                 jpeg: Bytes::from_static(b"x"),
             });
         }
         let latest = cache.latest().unwrap();
-        assert_eq!(latest.uptime_ms, 9);
+        assert_eq!(latest.server_recv_ms, 9);
         assert_eq!(cache.recent.read().len(), 3);
     }
 }

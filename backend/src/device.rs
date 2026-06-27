@@ -17,7 +17,6 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Debug, Clone)]
 pub struct PhotoResult {
     pub path: String,
-    pub uptime_ms: u64,
 }
 
 /// 后端 → 设备的下行指令载体（UDP 监听任务消费后 AEAD 加密回送设备）
@@ -46,7 +45,11 @@ pub struct DeviceEntry {
 }
 
 impl DeviceEntry {
-    pub fn new(device_id: String, video_cache_capacity: usize, video_max_recent: usize) -> Arc<Self> {
+    pub fn new(
+        device_id: String,
+        video_cache_capacity: usize,
+        video_max_recent: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             device_id,
             online: AtomicBool::new(true),
@@ -186,15 +189,6 @@ impl DeviceRegistry {
             })
             .collect()
     }
-
-    /// 标记超时设备离线（心跳超过阈值）。
-    pub fn mark_offline_older_than(&self, threshold_ms: u64, now_ms: u64) {
-        for entry in self.inner.iter() {
-            if now_ms.saturating_sub(entry.last_seen()) > threshold_ms {
-                entry.online.store(false, Ordering::Relaxed);
-            }
-        }
-    }
 }
 
 /// 出站指令通道句柄（handlers 与 UDP 监听任务之间的桥）
@@ -208,7 +202,10 @@ impl CommandSink {
         Self { tx }
     }
 
-    pub async fn send(&self, cmd: OutboundCommand) -> Result<(), mpsc::error::SendError<OutboundCommand>> {
+    pub async fn send(
+        &self,
+        cmd: OutboundCommand,
+    ) -> Result<(), mpsc::error::SendError<OutboundCommand>> {
         self.tx.send(cmd).await
     }
 }
@@ -241,8 +238,11 @@ mod tests {
     fn enforces_max_devices() {
         let reg = DeviceRegistry::new(1, 8, 4);
         let _ = reg.get_or_create("dev1").unwrap();
-        let err = reg.get_or_create("dev2").unwrap_err();
-        assert!(matches!(err, RegistryError::MaxDevicesExceeded { max: 1 }));
+        let res = reg.get_or_create("dev2");
+        assert!(matches!(
+            res,
+            Err(RegistryError::MaxDevicesExceeded { max: 1 })
+        ));
     }
 
     #[test]
