@@ -11,7 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 # 直接基于 actix-http，避免引入 actix-web 全套以控制内存
-actix-http = { version = "3.13.1", features = ["rustls-0_23", "compress-gzip"] }
+# http2 必须启用：actix-http 的 rustls acceptor 会强制把 h2 注入 ALPN 列表，
+# Chrome 等浏览器会协商到 h2，未启用 http2 feature 时会 panic。
+actix-http = { version = "3.13.1", features = ["rustls-0_23", "compress-gzip", "http2"] }
 actix-server = "2"
 actix-service = "2"
 actix-rt = "2"

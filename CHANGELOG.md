@@ -11,6 +11,9 @@
 - 后端新增 `backend/build.rs`：编译期自动检测 `frontend/node_modules` 与 `frontend/dist`，按需执行 `bun install` / `bun run build`，再 `include_dir!` 内嵌；日常 `cargo build` 即可
 
 ### Fixed
+- 修复 Chrome 访问 HTTPS 端口报 `ERR_CONNECTION_RESET` 的问题：
+  - 根因：actix-http `rustls_0_23` acceptor 强制把 `h2` 注入 ALPN 列表（service.rs:444-446），覆盖我们设置的 `["http/1.1"]`，Chrome 协商到 h2 后 actix-http 因未启用 `http2` feature panic
+  - 修复：启用 `actix-http` 的 `http2` feature，同时移除无效的 `alpn_protocols = ["http/1.1"]` 设置（actix-http 默认注入 `[h2, http/1.1]`，浏览器自动协商）
 - 修复固件在 ESP32 Arduino 核心 3.3.8-cn 下的编译错误：
   - `ledcSetup` / `ledcAttachPin` 已废弃 → 改用 `ledcAttach(pin, freq, res)` + `ledcWrite(pin, duty)`
   - `ESP.getChipId()` 不再存在 → 改用 `ESP.getEfuseMac()`

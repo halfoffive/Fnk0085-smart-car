@@ -7,7 +7,7 @@
 三端一体单仓，**版本号统一**（固件 / 后端 / 前端 / PWA 缓存键共用 `package.json` 的 `version`，改版本时 PWA 会自动清旧缓存）：
 
 - `firmware/Fnk0085-smart-car/` — ESP32-S3 Arduino `.ino`（摄像头 + 电机 + 编码器 + PID + Web Serial 配网）
-- `backend/` — Rust + actix-http v3.13.1（非 actix-web），多设备 UDP 转发 + 1s 视频环形缓存，`include_dir!` 编译期内嵌 `../frontend/dist`
+- `backend/` — Rust + actix-http v3.13.1（**启用 `http2` feature**，否则 Chrome 协商 h2 后 actix-http 会 panic；ALPN 由 actix-http 自动注入 `[h2, http/1.1]`，不要手动设 `alpn_protocols`），多设备 UDP 转发 + 1s 视频环形缓存，`include_dir!` 编译期内嵌 `../frontend/dist`
 - `frontend/` — Vite 8.1.0 + Vue 3.5.9 + TailwindCSS 4.3.1，包管理器用 **bun**（不再用 npm）。PWA 用 `injectManifest` + 自定义 `src/sw.ts`（**不要改回 `generateSW`**，曾经在 Vite 8 下因 workbox shim 异步加载导致 install handler 注册晚于 install 事件，离线白屏）
 - `protocol.md` — 设备↔后端↔前端的通信契约，**任何字段变更必须同步改三端实现 + 本文档**
 
@@ -50,6 +50,7 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - `*.jsonc`、`*.crt`、`*.key`、`*.pem` 均 gitignore（含 token 与证书路径）。**不要提交运行时生成的 config / certs**。
 - 默认后端监听 HTTP 8080、UDP 7000；token 默认 `change-me-please`，部署前务必修改。
 - UDP 视频走 AES-128-GCM AEAD（Arduino-ESP32 无 DTLS 高层 API，用 AEAD 等价替代）；HTTP 走 rustls 0.23，支持 mTLS（`client_ca` 设非 null 即启用）。
+- HTTP 协议版本：HTTP/2 over TLS（同端口 8080），HTTP/3 暂不实现（actix-http 不支持，后期由 nginx 反代）。
 
 ## 协议改动清单
 

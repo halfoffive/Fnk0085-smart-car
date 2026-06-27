@@ -159,7 +159,7 @@ fn build_rustls_server_config(
 
     // 构造 ServerConfig：rustls 0.23 API 要求先选择 verifier（WantsVerifier → WantsServerCert），
     // 再 with_single_cert 完成构造。
-    let mut config = match client_ca_pem {
+    let config = match client_ca_pem {
         Some(ca) => {
             // mTLS：加载 CA 并要求客户端证书
             let mut ca_reader = ca;
@@ -191,10 +191,6 @@ fn build_rustls_server_config(
             .with_single_cert(cert_chain, key)
             .context("构造 rustls::ServerConfig 失败")?,
     };
-
-    // ALPN：仅 HTTP/1.1。actix-http 未启用 http2 feature（低内存优先），
-    // 协商到 h2 会 panic；SSE/multipart 流式响应在 HTTP/1.1 下完全够用。
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Ok(config)
 }
