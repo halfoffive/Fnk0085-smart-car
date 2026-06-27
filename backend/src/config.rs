@@ -21,7 +21,10 @@ const DEFAULT_CONFIG_JSONC: &str = r#"{
     "token": "change-me-please",
     "tls_cert": "./certs/server.crt",
     "tls_key": "./certs/server.key",
-    "client_ca": "./certs/ca.crt"
+    // 客户端 CA（mTLS 可选校验）。设为 null 时浏览器可直接访问 HTTPS；
+    // 设为证书路径时仅校验提供了客户端证书的连接，不阻断无证书浏览器。
+    // 设备认证走 UDP+AEAD token，与 HTTPS 的 mTLS 无关。
+    "client_ca": null
   },
   "log_level": "info"
 }

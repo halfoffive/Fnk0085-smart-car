@@ -175,7 +175,10 @@ fn build_rustls_server_config(
                     .add(c)
                     .context("添加 client CA 到 root store 失败")?;
             }
+            // mTLS 可选校验：仅校验提供了客户端证书的连接，
+            // 不阻断无证书浏览器（设备认证走 UDP+AEAD，与 HTTPS mTLS 无关）
             let verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
+                .allow_unauthenticated()
                 .build()
                 .context("构造 client verifier 失败")?;
             ServerConfig::builder()
