@@ -52,9 +52,7 @@ const int PIN_IN4 = 7;
 const int PIN_ENA = 1;   // 左电机 PWM
 const int PIN_ENB = 2;   // 右电机 PWM
 
-// LEDC PWM 配置（摄像头使用 LEDC_CHANNEL_0/LEDC_TIMER_0，电机改用 1/2 避免冲突）
-const int      LEDC_CH_LEFT   = 1;
-const int      LEDC_CH_RIGHT  = 2;
+// LEDC PWM 配置（core 3.x 由 ledcAttach 自动分配 channel，无需手动指定）
 const uint32_t LEDC_FREQ_HZ   = 1000;   // 1 kHz
 const uint8_t  LEDC_RES_BITS  = 8;      // 8 位分辨率
 const uint16_t PWM_MAX         = 255;   // 8 位 PWM 上限
@@ -130,7 +128,8 @@ portMUX_TYPE encMux = portMUX_INITIALIZER_UNLOCKED;
 
 // PWM 缓存表（targetSpeed → stablePwm）
 const int PWM_CACHE_SIZE = 16;
-PwmCacheEntry pwmCache[PWM_CACHE_SIZE] = {0};
+// 显式初始化全部字段，避免 -Wmissing-field-initializers
+PwmCacheEntry pwmCache[PWM_CACHE_SIZE] = { {0, 0, false} };
 bool pwmCacheEnabled = true;   // 全局开关，可被 pwm_cache 指令切换
 
 // 帧序号（每帧 +1，AES-GCM nonce 一部分）
@@ -140,7 +139,7 @@ volatile uint32_t frameSeq = 0;
 String    targetDirection = "stop";
 int       targetPwm       = 0;
 uint32_t  motionStopAt    = 0;     // 0 表示不自动停止
-PidState  pidState        = {0};
+PidState  pidState        = { 0.0f, 0.0f, 0.0f, 0.0f, 0 };
 
 // 设备身份
 String deviceId;
@@ -257,11 +256,9 @@ void motorInit() {
   pinMode(PIN_IN2, OUTPUT);
   pinMode(PIN_IN3, OUTPUT);
   pinMode(PIN_IN4, OUTPUT);
-  // ledcSetup/ledcAttachPin（Arduino-ESP32 core 2.x API，3.x 兼容层）
-  ledcSetup(LEDC_CH_LEFT,  LEDC_FREQ_HZ, LEDC_RES_BITS);
-  ledcSetup(LEDC_CH_RIGHT, LEDC_FREQ_HZ, LEDC_RES_BITS);
-  ledcAttachPin(PIN_ENA, LEDC_CH_LEFT);
-  ledcAttachPin(PIN_ENB, LEDC_CH_RIGHT);
+  // Arduino-ESP32 core 3.x：ledcAttach 一步完成 channel 分配 + 引脚绑定 + 频率/分辨率设置
+  ledcAttach(PIN_ENA, LEDC_FREQ_HZ, LEDC_RES_BITS);
+  ledcAttach(PIN_ENB, LEDC_FREQ_HZ, LEDC_RES_BITS);
   setMotor(0, 0);
 }
 
@@ -289,18 +286,20 @@ void setMotor(int leftPwm, int rightPwm) {
   // 限幅
   if (leftPwm  > PWM_MAX) leftPwm  = PWM_MAX;
   if (rightPwm > PWM_MAX) rightPwm = PWM_MAX;
-  ledcWrite(LEDC_CH_LEFT,  (uint32_t)leftPwm);
-  ledcWrite(LEDC_CH_RIGHT, (uint32_t)rightPwm);
+  // core 3.x：ledcWrite 第一参数为引脚而非 channel
+  ledcWrite(PIN_ENA, (uint32_t)leftPwm);
+  ledcWrite(PIN_ENB, (uint32_t)rightPwm);
 }
 
 /* =================================================================
  * 2.3 双编码器测速
  * ================================================================= */
 void IRAM_ATTR onLeftEncoder() {
-  encLeftCount++;
+  // core 3.x：volatile 的 ++ 已弃用，改用显式赋值
+  encLeftCount = encLeftCount + 1;
 }
 void IRAM_ATTR onRightEncoder() {
-  encRightCount++;
+  encRightCount = encRightCount + 1;
 }
 
 void encoderInit() {
@@ -430,8 +429,9 @@ void setPwmCacheEnabled(bool enabled) {
  * 2.6 设备身份生成
  * ================================================================= */
 String generateDeviceId() {
-  // ESP.getChipId() 返回基于 MAC 的 48-bit ID
-  uint32_t chipId = (uint32_t)ESP.getChipId();
+  // ESP32-S3 core 3.x 无 ESP.getChipId；用 EFUSE MAC 低 32 位作为芯片编号
+  uint64_t mac64 = ESP.getEfuseMac();
+  uint32_t chipId = (uint32_t)(mac64 >> 24) ^ (uint32_t)mac64;
   String mac = WiFi.macAddress();
   mac.replace(":", "");
   String id = "ESP32S3_" + String(chipId, HEX) + "_" + mac;
@@ -444,13 +444,14 @@ String generateDeviceId() {
  * ================================================================= */
 
 // 由 token 派生 128 位 AES 密钥（SHA-256 截前 16B）
+// 注：mbedtls 3.x 移除了 _ret 后缀，新版函数直接返回 int 错误码
 void deriveAesKey(const String& token, uint8_t outKey[16]) {
   uint8_t sha[32];
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
-  mbedtls_sha256_starts_ret(&ctx, 0);
-  mbedtls_sha256_update_ret(&ctx, (const uint8_t*)token.c_str(), token.length());
-  mbedtls_sha256_finish_ret(&ctx, sha);
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, (const uint8_t*)token.c_str(), token.length());
+  mbedtls_sha256_finish(&ctx, sha);
   mbedtls_sha256_free(&ctx);
   memcpy(outKey, sha, 16);
 }
@@ -486,7 +487,8 @@ bool aeadEncrypt(const uint8_t* key, const uint8_t* nonce12,
 void sendVideoFrame(uint8_t* jpegBuf, size_t jpegLen, uint32_t uptimeMs) {
   if (jpegLen == 0) return;
 
-  uint32_t seq = frameSeq++;
+  uint32_t seq = frameSeq;
+  frameSeq = frameSeq + 1;
   const size_t deviceIdLen = deviceId.length();
   if (deviceIdLen > 200) {
     // deviceIdLen 字段是 uint8，超长保护

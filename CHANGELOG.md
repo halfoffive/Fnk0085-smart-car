@@ -4,6 +4,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### Changed
+- 前端框架由 React 18 迁移至 Vue 3.5.9（SFC + `<script setup lang="ts">` + composables），包管理器由 npm 切换为 **bun**
+- 后端新增 `backend/build.rs`：编译期自动检测 `frontend/node_modules` 与 `frontend/dist`，按需执行 `bun install` / `bun run build`，再 `include_dir!` 内嵌；日常 `cargo build` 即可
+
+### Fixed
+- 修复固件在 ESP32 Arduino 核心 3.3.8-cn 下的编译错误：
+  - `ledcSetup` / `ledcAttachPin` 已废弃 → 改用 `ledcAttach(pin, freq, res)` + `ledcWrite(pin, duty)`
+  - `ESP.getChipId()` 不再存在 → 改用 `ESP.getEfuseMac()`
+  - `mbedtls_sha256_starts_ret` / `_update_ret` / `_finish_ret` 已合并为无后缀版本
+  - `volatile ++` 触发 `-Wvolatile` → 改为显式 `x = x + 1`
+  - 结构体聚合初始化缺少成员告警 → 显式列出全部字段
+
 ## [0.1.0] - 2026-06-26
 
 ### Added

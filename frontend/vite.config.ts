@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import vue from '@vitejs/plugin-vue';
 import { VitePWA } from 'vite-plugin-pwa';
 
 // PWA 缓存版本：与项目版本号一致，构建期注入到 SW 与缓存键
@@ -15,7 +15,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
   plugins: [
-    react(),
+    vue(),
     VitePWA({
       // 使用 injectManifest 模式：自定义 SW 直接 ESM 导入 workbox，
       // 避免 generateSW 模式注入的 module shim 异步加载导致 precache install handler 注册晚于 SW install 事件
@@ -43,8 +43,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: (id) => {
-          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) {
-            return 'react';
+          if (id.includes('node_modules/vue') || id.includes('node_modules/@vue')) {
+            return 'vue';
           }
           return undefined;
         },

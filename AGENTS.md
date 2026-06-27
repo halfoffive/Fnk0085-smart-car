@@ -8,36 +8,28 @@
 
 - `firmware/Fnk0085-smart-car/` — ESP32-S3 Arduino `.ino`（摄像头 + 电机 + 编码器 + PID + Web Serial 配网）
 - `backend/` — Rust + actix-http v3.13.1（非 actix-web），多设备 UDP 转发 + 1s 视频环形缓存，`include_dir!` 编译期内嵌 `../frontend/dist`
-- `frontend/` — Vite 8.1.0 + React 18 + TailwindCSS 4.3.1，PWA 用 `injectManifest` + 自定义 `src/sw.ts`（**不要改回 `generateSW`**，曾经在 Vite 8 下因 workbox shim 异步加载导致 install handler 注册晚于 install 事件，离线白屏）
+- `frontend/` — Vite 8.1.0 + Vue 3.5.9 + TailwindCSS 4.3.1，包管理器用 **bun**（不再用 npm）。PWA 用 `injectManifest` + 自定义 `src/sw.ts`（**不要改回 `generateSW`**，曾经在 Vite 8 下因 workbox shim 异步加载导致 install handler 注册晚于 install 事件，离线白屏）
 - `protocol.md` — 设备↔后端↔前端的通信契约，**任何字段变更必须同步改三端实现 + 本文档**
 
 ## 构建顺序（硬约束）
 
-后端编译期通过 `backend/build.rs` 断言 `../frontend/dist` 存在，并 `include_dir!` 内嵌。所以：
+后端编译期通过 `backend/build.rs` **自动构建前端**：检测 `node_modules` 缺失则 `bun install`，检测 `dist/` 缺失或源码（`src/`、`vite.config.ts`、`tsconfig*`、`index.html`、`package.json`）较新则 `bun run build`，再 `include_dir!` 内嵌。所以日常只需：
 
 ```
-frontend: npm install && npm run build   # 先产 dist/
-backend:  cargo run --release            # 再编译后端
-```
-
-改了前端不重新 `npm run build`，后端 `cargo build` 会 panic 或内嵌旧产物。
-
-## 常用命令
-
-```powershell
-# 前端
-cd frontend
-npm install
-npm run build      # = tsc -b && vite build；产物到 dist/
-npm run dev        # 仅开发预览，不更新后端内嵌产物
-
-# 后端
 cd backend
-cargo run --release
-# 首次启动在「运行目录」生成 Fnk0085-smart-car-config.jsonc（端口/token/TLS 路径，JSONC 注释）和 certs/（rcgen 自签）。改配置后重启。
+cargo build --release      # build.rs 自动跑 bun install / bun run build
 ```
 
-`npm run build` 不存在专属 lint/typecheck 脚本；类型检查由 `build` 内的 `tsc -b` 承担。改完前端只跑 `tsc -b` 也可快速验类型。
+手工构建前端（仅开发预览 / 调试 build 产物）：
+
+```
+cd frontend
+bun install
+bun run build              # = vue-tsc -b && vite build；产物到 dist/
+bun run dev                # 仅开发预览，不更新后端内嵌产物
+```
+
+**注意**：build.rs 走的是 `bun.exe`（Windows）/ `bun`（其它平台），需 bun 在 PATH 中。改前端源码后直接 `cargo build`，build.rs 会按 mtime 自动重建 dist。
 
 ## Windows 环境坑
 
@@ -47,7 +39,7 @@ cargo run --release
 
 ## 测试
 
-- `tests/ui_smoke.py` — Playwright 同步 UI 烟雾 + PWA 离线验证。需先 `npm run build` 产出 `frontend/dist`。
+- `tests/ui_smoke.py` — Playwright 同步 UI 烟雾 + PWA 离线验证。需先有 `frontend/dist`（`bun run build` 或直接 `cargo build` 触发 build.rs 自动产出）。
 - 跑法：借助 `webapp-testing` skill 的 `with_server.py` 启静态服务器托管 `frontend/dist`，再跑 `tests/ui_smoke.py`。脚本内 `BASE_URL` 由 `UI_SMOKE_HOST` / `UI_SMOKE_PORT` 环境变量覆盖（默认 127.0.0.1:5180）。
 - Playwright 依赖本地化在 `tests/.pylibs` 与 `tests/.browsers`（已 gitignore），通过 `PYTHONPATH` + `PLAYWRIGHT_BROWSERS_PATH` 复用，**不要 `pip install` 或 `playwright install`**。
 - 测试无独立后端集成项；`cargo run` 行为靠真实环境复验（见 Windows 坑）。
