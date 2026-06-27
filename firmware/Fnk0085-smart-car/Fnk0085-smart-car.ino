@@ -513,7 +513,7 @@ void httpsLockGive() {
 void logTlsAndHttpError(HTTPClient& http, int code, const char* tag) {
   if (useHttps && !httpsHandshakeFailed) {
     char errBuf[128] = {0};
-    int tlsErr = httpsClient.getLastSSLError(errBuf, sizeof(errBuf));
+    int tlsErr = httpsClient.lastError(errBuf, sizeof(errBuf));
     Serial.printf("[TLS] %s lastErr=%d %s\n", tag, tlsErr, errBuf);
   }
   Serial.printf("[HTTP] %s error=%d %s\n", tag, code, http.errorToString(code).c_str());
