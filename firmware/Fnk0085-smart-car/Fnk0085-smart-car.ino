@@ -26,7 +26,7 @@
  *   - 双模式：server 字段含 https:// → useHttps=true 走 httpsClient；
  *             含 http://  → useHttps=false 走 plainClient（明文直连后端）；
  *             无 scheme 前缀（老配置）默认 useHttps=true
- *   - SNTP 时间同步：configTime(0, "pool.ntp.org", "time.google.com")
+ *   - SNTP 时间同步：configTime(0, 0, "pool.ntp.org", "time.google.com")
  *   - pollTask（FreeRTOS，core 0）独占长轮询；指令通过 FreeRTOS 队列投递给 loop
  *   - videoTask（FreeRTOS，core 0）采集 + POST 单帧；与 pollTask 共享 httpsClient/plainClient
  *     （通过 httpsMutex 互斥访问，避免 HTTPClient 并发竞争）
@@ -215,7 +215,7 @@ String generateDeviceId();
 // HTTPS 控制通道
 int  httpsPost(const String& path, const String& body, String& respOut);
 int  httpsGet(const String& path, String& respOut);
-int  httpsPostFrame(const uint8_t* jpeg, size_t len, uint64_t uptimeMs);
+int  httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs);
 void sendRegister();
 void sendPhotoDone(const String& path, uint32_t uptimeMs);
 void sendAck(int refSeq);
@@ -559,7 +559,7 @@ int httpsGet(const String& path, String& respOut) {
 // POST 单帧 JPEG 到 /api/device/{id}/frame；返回 HTTP 状态码，<0 为网络错误
 // body 为原始 JPEG 二进制；header 携带 token + uptime（用于前端延时测量）
 // 单帧超时 2s（FRAME_POST_TIMEOUT_MS），保证 10fps 节奏不塌
-int httpsPostFrame(const uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
+int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   if (!httpsLockTake(FRAME_POST_TIMEOUT_MS)) {
     Serial.println("[FRAME] lock timeout");
     return -1;
@@ -1094,7 +1094,7 @@ void setup() {
   // SNTP 时间同步（WiFi 连接成功后；mbedTLS 证书时间校验依赖）
   // 失败仅告警不阻塞（后端证书 not_before=1970 / not_after=2099 兜底）
   Serial.println("[SNTP] syncing time...");
-  configTime(0, SNTP_SERVER1, SNTP_SERVER2);
+  configTime(0, 0, SNTP_SERVER1, SNTP_SERVER2);
   uint32_t sntpStart = millis();
   time_t now = 0;
   bool sntpOk = false;
