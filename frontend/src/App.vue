@@ -5,8 +5,9 @@ import DeviceSelect from './components/DeviceSelect.vue';
 import VideoStream from './components/VideoStream.vue';
 import ControlPanel from './components/ControlPanel.vue';
 import ConfigDialog from './components/ConfigDialog.vue';
+import { useKeyboard } from './composables/useKeyboard';
 import { useDevices } from './composables/useDevices';
-import { sliderToPwm } from './lib/api';
+import { pwmToSlider, sliderToPwm } from './lib/api';
 import { APP_VERSION, PWM_MAX } from './lib/constants';
 import { registerSW } from 'virtual:pwa-register';
 
@@ -73,7 +74,29 @@ function handlePhotoError(msg: string) {
   pushToast('error', `拍照失败：${msg}`);
 }
 
+// 滑块 / PWM 统一更新入口
+function handlePwmChange(v: number) {
+  pwm.value = v;
+}
+
+// 方向键 ±5（slider 单位）调速，再映射回 PWM 0-255
+function handleSpeedDelta(delta: number) {
+  const nextSlider = Math.max(1, Math.min(100, pwmToSlider(pwm.value) + delta));
+  handlePwmChange(sliderToPwm(nextSlider));
+}
+
+// 全局监听速度键（上下方向键），仅在选中设备时生效
+useKeyboard({
+  onPress: () => {},
+  onRelease: () => {},
+  enabled: () => !!selectedDevice.value,
+  onSpeedDelta: handleSpeedDelta,
+});
+
 const onlineCount = computed(() => devices.value.filter((d) => d.online).length);
+const selectedDeviceInfo = computed(() =>
+  devices.value.find((d) => d.deviceId === selectedDevice.value),
+);
 const toastClass = (kind: ToastKind) =>
   kind === 'success'
     ? 'bg-accent/10 border-accent text-accent'
@@ -149,6 +172,13 @@ const toastIcon = (kind: ToastKind) => (kind === 'success' ? '✓' : kind === 'e
               pwm:
               <span class="text-amber">{{ pwm }}/{{ PWM_MAX }}</span>
             </span>
+            <span class="text-ink-faint">·</span>
+            <span class="text-ink-faint">
+              rpm:
+              <span class="text-accent">{{ selectedDeviceInfo?.leftRpm ?? 0 }}</span>
+              /
+              <span class="text-accent">{{ selectedDeviceInfo?.rightRpm ?? 0 }}</span>
+            </span>
           </div>
         </div>
 
@@ -177,7 +207,7 @@ const toastIcon = (kind: ToastKind) => (kind === 'success' ? '✓' : kind === 'e
           <ControlPanel
             :device-id="selectedDevice"
             :pwm="pwm"
-            @pwm-change="(v) => (pwm = v)"
+            @pwm-change="handlePwmChange"
             @open-config="configOpen = true"
             @photo-before="photoPending = true"
             @photo-after="photoPending = false"

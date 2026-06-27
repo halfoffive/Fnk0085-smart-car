@@ -8,7 +8,7 @@ use crate::video_cache::VideoCache;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
@@ -33,6 +33,10 @@ pub struct DeviceEntry {
     pub video: VideoCache,
     /// PWM 缓存开关
     pub pwm_cache_enabled: AtomicBool,
+    /// 左轮转速（RPM）
+    pub left_rpm: AtomicI32,
+    /// 右轮转速（RPM）
+    pub right_rpm: AtomicI32,
     /// 等待中的拍照回执 oneshot（同一设备同时仅允许一个挂起拍照）
     pub photo_pending: Mutex<Option<oneshot::Sender<PhotoResult>>>,
     /// 指令队列发送端（handlers 推入指令 JSON）
@@ -55,6 +59,8 @@ impl DeviceEntry {
             addr: Mutex::new(None),
             video: VideoCache::new(video_cache_capacity, video_max_recent),
             pwm_cache_enabled: AtomicBool::new(true),
+            left_rpm: AtomicI32::new(0),
+            right_rpm: AtomicI32::new(0),
             photo_pending: Mutex::new(None),
             cmd_tx,
             cmd_rx: AsyncMutex::new(cmd_rx),
@@ -87,6 +93,20 @@ impl DeviceEntry {
 
     pub fn set_pwm_cache(&self, enabled: bool) {
         self.pwm_cache_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// 更新轮速 telemetry。
+    pub fn set_telemetry(&self, left_rpm: i32, right_rpm: i32) {
+        self.left_rpm.store(left_rpm, Ordering::Relaxed);
+        self.right_rpm.store(right_rpm, Ordering::Relaxed);
+    }
+
+    /// 读取当前轮速遥测值。
+    pub fn telemetry(&self) -> (i32, i32) {
+        (
+            self.left_rpm.load(Ordering::Relaxed),
+            self.right_rpm.load(Ordering::Relaxed),
+        )
     }
 
     /// 注册一个等待中的拍照回执 oneshot。
@@ -127,6 +147,8 @@ pub struct DeviceSummary {
     pub device_id: String,
     pub online: bool,
     pub last_seen_ms: u64,
+    pub left_rpm: i32,
+    pub right_rpm: i32,
 }
 
 /// 设备注册表错误
@@ -187,10 +209,15 @@ impl DeviceRegistry {
     pub fn list(&self) -> Vec<DeviceSummary> {
         self.inner
             .iter()
-            .map(|e| DeviceSummary {
-                device_id: e.device_id.clone(),
-                online: e.is_online(),
-                last_seen_ms: e.last_seen(),
+            .map(|e| {
+                let (left_rpm, right_rpm) = e.telemetry();
+                DeviceSummary {
+                    device_id: e.device_id.clone(),
+                    online: e.is_online(),
+                    last_seen_ms: e.last_seen(),
+                    left_rpm,
+                    right_rpm,
+                }
             })
             .collect()
     }

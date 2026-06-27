@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// 控制面板：WASD D-pad + 1-100 调速滑块 + PWM 缓存开关 + 拍照按钮 + 配网入口
+// 控制面板：WASD D-pad + 1-100 调速滑块 + 智能修正开关 + 拍照按钮 + 配网入口 + 轮速显示
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useKeyboard } from '../composables/useKeyboard';
-import { getPwmCache, postControl, postPwmCache, sliderToPwm } from '../lib/api';
+import { getPwmCache, getTelemetry, postControl, postPwmCache, sliderToPwm } from '../lib/api';
 import { PWM_DEBOUNCE_MS, PWM_MAX, SLIDER_MAX, SLIDER_MIN } from '../lib/constants';
-import type { Direction } from '../types/protocol';
+import type { Direction, TelemetryState } from '../types/protocol';
 import PadButton from './PadButton.vue';
 import PhotoButton from './PhotoButton.vue';
 import Section from './Section.vue';
@@ -27,6 +27,8 @@ const emit = defineEmits<{
 const activeDir = ref<Direction | null>(null);
 const cacheEnabled = ref<boolean | null>(null);
 const cacheLoading = ref(false);
+const telemetry = ref<TelemetryState>({ leftRpm: 0, rightRpm: 0 });
+let telemetryTimer: ReturnType<typeof setInterval> | null = null;
 
 // WASD 在飞未完成集合，避免重复下发
 const inFlight = new Set<Direction>();
@@ -41,12 +43,17 @@ watch(
   },
 );
 
-// 拉取 PWM 缓存状态
+// 拉取 PWM 缓存状态 与 轮速
 watch(
   () => props.deviceId,
   (id) => {
     if (!id) {
       cacheEnabled.value = null;
+      telemetry.value = { leftRpm: 0, rightRpm: 0 };
+      if (telemetryTimer) {
+        clearInterval(telemetryTimer);
+        telemetryTimer = null;
+      }
       return;
     }
     let cancelled = false;
@@ -61,6 +68,19 @@ watch(
       .finally(() => {
         if (!cancelled) cacheLoading.value = false;
       });
+
+    // 立即拉一次轮速，之后每 500ms 刷新
+    const refreshTelemetry = () => {
+      getTelemetry(id).then((t) => {
+        if (!cancelled) telemetry.value = t;
+      }).catch(() => {
+        // 静默失败，保留旧值
+      });
+    };
+    refreshTelemetry();
+    if (telemetryTimer) clearInterval(telemetryTimer);
+    telemetryTimer = setInterval(refreshTelemetry, 500);
+
     return () => {
       cancelled = true;
     };
@@ -117,8 +137,8 @@ const handleSliderChange = (val: number) => {
   }, PWM_DEBOUNCE_MS);
 };
 
-// PWM 缓存开关
-const handleToggleCache = async () => {
+// 智能修正（原 PWM 缓存）开关
+const handleToggleSmartCorrect = async () => {
   if (!props.deviceId || cacheEnabled.value === null || cacheLoading.value) return;
   const next = !cacheEnabled.value;
   cacheLoading.value = true;
@@ -136,18 +156,15 @@ const sliderValue = computed(() => Math.round((props.pwm / PWM_MAX) * 100));
 const pct = computed(
   () => ((sliderValue.value - SLIDER_MIN) / (SLIDER_MAX - SLIDER_MIN)) * 100,
 );
-const cacheHint = computed(() => {
-  if (cacheEnabled.value === null) return '—';
-  return cacheEnabled.value ? 'on' : 'off';
-});
-const cacheText = computed(() => {
+const smartCorrectText = computed(() => {
   if (cacheLoading.value) return '⟳ updating';
   if (cacheEnabled.value === null) return 'unknown';
-  return cacheEnabled.value ? 'enabled' : 'disabled';
+  return cacheEnabled.value ? '已开启' : '已关闭';
 });
 
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
+  if (telemetryTimer) clearInterval(telemetryTimer);
 });
 </script>
 
@@ -248,28 +265,42 @@ onBeforeUnmount(() => {
       />
     </Section>
 
-    <!-- ============ PWM 缓存开关 ============ -->
-    <Section title="tuning ▸ pwm cache" :hint="cacheHint">
+    <!-- ============ 轮速显示 ============ -->
+    <Section title="telemetry ▸ rpm" :hint="`${telemetry.leftRpm} / ${telemetry.rightRpm}`">
+      <div class="grid grid-cols-2 gap-2">
+        <div class="bg-surface-2 border border-border-bright px-3 py-2 text-center">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-ink-faint mb-1">LEFT RPM</div>
+          <div class="font-mono text-sm text-accent">{{ telemetry.leftRpm }}</div>
+        </div>
+        <div class="bg-surface-2 border border-border-bright px-3 py-2 text-center">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-ink-faint mb-1">RIGHT RPM</div>
+          <div class="font-mono text-sm text-accent">{{ telemetry.rightRpm }}</div>
+        </div>
+      </div>
+    </Section>
+
+    <!-- ============ 智能修正开关 ============ -->
+    <Section title="tuning ▸ smart correct" :hint="smartCorrectText">
       <div class="flex items-center justify-between bg-surface-2 border border-border-bright px-3 py-2.5">
         <div class="flex flex-col">
-          <span class="font-mono text-[11px] text-ink">PWM 缓存</span>
+          <span class="font-mono text-[11px] text-ink">智能修正</span>
           <span class="font-mono text-[9px] uppercase tracking-wider text-ink-faint">
             PID 收敛结果复用
           </span>
         </div>
         <button
           type="button"
-          role="switch"
-          :aria-checked="cacheEnabled === true"
-          @click="handleToggleCache"
+          @click="handleToggleSmartCorrect"
           :disabled="!deviceId || cacheLoading || cacheEnabled === null"
-          class="toggle-switch disabled:opacity-30 disabled:cursor-not-allowed"
-          aria-label="切换 PWM 缓存"
-        />
-      </div>
-      <div class="flex items-center gap-1 mt-1.5 font-mono text-[9px] uppercase tracking-wider text-ink-faint">
-        <span>cache:</span>
-        <span :class="cacheEnabled ? 'text-accent' : 'text-ink-dim'">{{ cacheText }}</span>
+          class="px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider border transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          :class="
+            cacheEnabled
+              ? 'bg-danger/10 border-danger text-danger hover:bg-danger/20'
+              : 'bg-accent/10 border-accent text-accent hover:bg-accent/20'
+          "
+        >
+          {{ cacheEnabled ? '关闭' : '开启' }}
+        </button>
       </div>
     </Section>
 

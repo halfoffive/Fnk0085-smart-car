@@ -168,6 +168,13 @@ pub async fn handle_event(
         DeviceEvent::Ack { ref_seq } => {
             log::debug!("设备 {device_id} ack refSeq={ref_seq}");
         }
+        DeviceEvent::Telemetry {
+            left_rpm,
+            right_rpm,
+        } => {
+            entry.set_telemetry(left_rpm, right_rpm);
+            log::debug!("设备 {device_id} telemetry left={left_rpm} right={right_rpm}");
+        }
         DeviceEvent::Error { code, message } => {
             log::warn!("设备 {device_id} 错误 code={code} message={message}");
         }

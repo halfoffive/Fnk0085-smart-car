@@ -139,7 +139,22 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 
 - `refSeq`: 对应 `ping` 的 `seq`
 
-#### 2.3.3 type=error
+#### 2.3.3 type=telemetry
+
+```json
+{
+  "type": "telemetry",
+  "leftRpm": 42,
+  "rightRpm": 40
+}
+```
+
+- `leftRpm`: int，左轮转速（RPM）
+- `rightRpm`: int，右轮转速（RPM）
+
+固件在 `loop()` 的 100ms 编码器采样处计算左右轮速后上报；后端收到后更新设备状态，并通过 `GET /api/devices` 透传至前端。
+
+#### 2.3.4 type=error
 
 ```json
 {
@@ -166,7 +181,7 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 
 ```json
 [
-  {"deviceId": "ESP32S3_123456_AABBCCDDEEFF", "online": true, "lastSeenMs": 1719360000000}
+  {"deviceId": "ESP32S3_123456_AABBCCDDEEFF", "online": true, "lastSeenMs": 1719360000000, "leftRpm": 42, "rightRpm": 40}
 ]
 ```
 
@@ -195,7 +210,18 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 {"path": "/photo/photo_001.jpg"}
 ```
 
-### 3.4 GET /api/stream/{deviceId}
+### 3.4 GET /api/telemetry/{deviceId}
+
+返回设备最新左右轮速（RPM）：
+
+```json
+{"leftRpm": 42, "rightRpm": 40}
+```
+
+- 设备不在线时返回 404
+- 数据由固件 `type=telemetry` 事件更新；`GET /api/devices` 也会同步透传相同字段
+
+### 3.5 GET /api/stream/{deviceId}
 
 视频流走 `multipart/x-mixed-replace; boundary="fnk0085frame"`（HTTP/1.1 chunked），与后端 `handlers/stream.rs` 实现一致。每个 part 为一帧完整 JPEG：
 
@@ -210,7 +236,7 @@ X-Latency-Ms: <int>\r\n
 - `X-Latency-Ms`：本帧端到端延迟（ms），由后端计算 `now - deviceUptimeMs` 后透传至前端
 - 浏览器通过 `fetch` + `ReadableStream` 或 `<img>` 自动刷新消费
 
-### 3.5 GET /api/pwm_cache/{deviceId}
+### 3.6 GET /api/pwm_cache/{deviceId}
 
 ```json
 {
@@ -219,7 +245,7 @@ X-Latency-Ms: <int>\r\n
 }
 ```
 
-### 3.6 POST /api/pwm_cache/{deviceId}
+### 3.7 POST /api/pwm_cache/{deviceId}
 
 请求体：
 
@@ -233,7 +259,7 @@ X-Latency-Ms: <int>\r\n
 {"ok": true}
 ```
 
-### 3.7 GET /api/health
+### 3.8 GET /api/health
 
 无鉴权健康端点（不携带 token，不绑定设备），用于固件启动时探测后端 scheme 与运维监控。
 
@@ -245,7 +271,7 @@ X-Latency-Ms: <int>\r\n
 
 固件 `probeScheme()` 在 WiFi 关联 + SNTP 同步后、首次 register 之前调用本端点：先试 NVS 配的 scheme（`http://` 或 `https://`），失败再试另一 scheme，成功则切换 `useHttps` 并写回 NVS（auto-correct）。
 
-### 3.8 静态资源
+### 3.9 静态资源
 
 - `GET /` → 返回 `index.html`（内嵌前端 PWA）
 
@@ -258,14 +284,14 @@ ASCII 行协议，每行一条命令，以 `\n` 结尾。
 ### 4.1 配网命令
 
 ```
-CONFIG|ssid=<ssid>|password=<pwd>|server=<host:port>|token=<token>\n
+CONFIG|ssid=<ssid>|password=<pwd>|server=<scheme://host:port>|token=<token>\n
 ```
 
 字段说明：
 
 - `ssid`: WiFi SSID
 - `password`: WiFi 密码
-- `server`: 后端 HTTPS 主机:端口（默认 8080，与浏览器访问同端口）
+- `server`: 后端地址，必须带 `http://` 或 `https://` scheme + 主机 + 端口（例如 `http://192.168.1.10:8080`）。固件根据 scheme 选择明文 `WiFiClient` 或 `WiFiClientSecure::setInsecure()`
 - `token`: 设备认证 token
 
 ### 4.2 查询命令（串口）

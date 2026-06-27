@@ -17,6 +17,7 @@ mod static_files;
 mod video_cache;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use actix_http::{HttpService, Request};
 use actix_server::Server;
@@ -54,6 +55,8 @@ async fn main() -> Result<()> {
     let state = AppState {
         registry: registry.clone(),
         expected_token: expected_token.clone(),
+        log_level: Arc::new(cfg.log_level.clone()),
+        server_addr: cfg.http_addr(),
     };
 
     // 6. 启动 actix-http 明文 HTTP 服务（h2c 协商由 http2 feature 支持）

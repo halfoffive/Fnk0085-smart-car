@@ -75,10 +75,12 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - 后端 HTTP/2 h2c 支持情况：`actix-http` 启用 `http2` feature + `tcp_auto_h2c()` 协商明文 HTTP/2，nginx 反代或 h2c 客户端可用 HTTP/2；固件受 ESP32 Arduino `HTTPClient` 库限制仍走 HTTP/1.1；HTTP/3 (QUIC) 在 ESP32 上不可行
 - **若前端设备名为空且视频一直 loading**：先检查 `GET /api/devices` 响应字段是否为 camelCase（`deviceId`/`lastSeenMs`）；排查工具可用浏览器 devtools Network 查看响应字段，若仍为 `device_id`/`last_seen_ms` 说明后端序列化未生效
 - **若 S3 串口按 WASD 无反应**：先确认串口已输出 `[CTRL] direction=... pwm=... durationMs=...`；若无此日志，则指令未到达固件，需依次检查前端 deviceId 是否合法、后端 `/api/device/{id}/poll` 队列是否正常、固件 `pollTask` 是否在线
+- **拍照时串口报 `SCCB_Write Failed addr:0x30 ... ret:259` 且后端 504**：根因是 `videoTask` 与 `handlePhoto` 并发访问 OV2640 SCCB 总线。已修复：`photoMux` 二进制信号量在 `handlePhoto()` 进入时独占、退出时释放；`videoTask()` 采集前非阻塞尝试获取信号量，失败则跳过本帧；拍照前后各增加 300ms/200ms/100ms 延时稳定传感器；捕获/SD 失败时立即 `sendError(5002, ...)` 上报，避免后端 `POST /api/photo/{id}` 挂起超时。
+- **前端视频画面无流**：检查串口是否周期打印 `[VIDEO] frames ok=%u fail=%u` 与 `[FRAME] POST failed ...`；`ok=0 fail=0` 表示 videoTask 未拿到帧（可能 photoInProgress 卡住或摄像头初始化失败）；`fail` 持续增加则检查后端 `/api/device/{id}/frame` 是否返回 401/404/413 或 scheme 是否匹配。
 
 ## 协议改动清单
 
-改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler（`device_api.rs` / `frame.rs`）、`frontend/src/**`、`protocol.md`。视频帧走 POST（`/api/device/{id}/frame`），body 原始 JPEG，header `Authorization` / `Content-Type` / `X-Device-Uptime-Ms`；协议版本 3。HTTP/HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步。
+改 `protocol.md` 任意字段时，按清单同步：`firmware/Fnk0085-smart-car/*.ino`、`backend/src/protocol.rs` 与各 handler（`device_api.rs` / `frame.rs` / `telemetry.rs` / `provisioning.rs`）、`frontend/src/**`、`protocol.md`。视频帧走 POST（`/api/device/{id}/frame`），body 原始 JPEG，header `Authorization` / `Content-Type` / `X-Device-Uptime-Ms`；协议版本 3。HTTP/HTTPS 设备指令走 `DeviceCommand` enum（tag=`type`，字段 camelCase），事件走 `DeviceEvent` enum（同命名约定），新增 variant 时三端同步。新增设备端点（如 `GET /api/telemetry/{id}`、`GET /api/config`）或修改访问日志格式时，同步更新 `README.md` 后端 API 速查表。
 
 ## 提交约定
 

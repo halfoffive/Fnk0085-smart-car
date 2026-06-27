@@ -14,4 +14,8 @@ pub struct AppState {
     pub registry: Arc<DeviceRegistry>,
     /// 期望的 token（用于 HTTP register / poll / event / frame 校验）
     pub expected_token: Arc<String>,
+    /// 日志级别（生产环境/调试模式控制）
+    pub log_level: Arc<String>,
+    /// 本服务监听地址（供 /api/config 返回给前端配网）
+    pub server_addr: String,
 }

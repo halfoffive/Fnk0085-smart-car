@@ -6,7 +6,7 @@ import { SERIAL_BAUD_RATE, SERIAL_RESPONSE_TIMEOUT_MS } from '../lib/constants';
 export interface SerialConfigPayload {
   ssid: string;
   password: string;
-  server: string; // host:port
+  server: string; // http(s)://host:port
   token: string;
 }
 

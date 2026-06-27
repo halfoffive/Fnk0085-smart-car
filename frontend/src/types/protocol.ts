@@ -8,10 +8,20 @@ export interface Device {
   online: boolean;
   /** 最近一次心跳时间戳（ms） */
   lastSeenMs: number;
+  /** 左轮转速（RPM），由 telemetry 事件更新 */
+  leftRpm: number;
+  /** 右轮转速（RPM），由 telemetry 事件更新 */
+  rightRpm: number;
 }
 
 /** 方向枚举 — 控制指令 */
 export type Direction = 'W' | 'A' | 'S' | 'D' | 'stop';
+
+/** GET /api/telemetry/{deviceId} 响应体 — 左右轮转速（RPM） */
+export interface TelemetryState {
+  leftRpm: number;
+  rightRpm: number;
+}
 
 /** POST /api/control/{deviceId} 请求体 */
 export interface ControlRequest {

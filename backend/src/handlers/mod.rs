@@ -9,8 +9,10 @@ pub mod device_api;
 pub mod devices;
 pub mod frame;
 pub mod photo;
+pub mod provisioning;
 pub mod pwm_cache;
 pub mod stream;
+pub mod telemetry;
 
 use crate::state::AppState;
 use actix_http::body::BoxBody;
@@ -22,7 +24,7 @@ use std::convert::Infallible;
 /// 统一响应类型：所有 handler 返回 `Response<BoxBody>`。
 pub type AppResponse = Response<BoxBody>;
 
-/// 主路由：根据 path + method 分发到各 handler。
+/// 主路由：根据 path + method 分发到各 handler，并打印访问日志。
 pub async fn route(req: Request, state: AppState) -> Result<AppResponse, Infallible> {
     let head = req.head();
     let method = head.method.clone();
@@ -32,17 +34,38 @@ pub async fn route(req: Request, state: AppState) -> Result<AppResponse, Infalli
             .get("accept-encoding")
             .and_then(|v| v.to_str().ok()),
     );
+    let is_debug = is_debug_level(&state.log_level);
+    if is_debug {
+        let query = head
+            .uri
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        log::debug!(
+            "[ACCESS-IN] {} {}{} {:?}",
+            method,
+            path,
+            query,
+            collect_request_headers(head.headers())
+        );
+    }
 
-    if let Some(resp) = try_route_api(&method, &path, req, &state, accept_gzip).await {
-        return Ok(resp);
-    }
-    // 静态资源
-    if method == Method::GET {
-        if let Some(resp) = try_serve_static(&path, accept_gzip) {
-            return Ok(resp);
-        }
-    }
-    Ok(not_found(accept_gzip))
+    let start = std::time::Instant::now();
+    let resp =
+        if let Some(r) = try_route_api(&method, &path, req, &state, accept_gzip, is_debug).await {
+            r
+        } else if method == Method::GET && path.starts_with("/api/") {
+            not_found(accept_gzip)
+        } else if method == Method::GET {
+            try_serve_static(&path, accept_gzip).unwrap_or_else(|| not_found(accept_gzip))
+        } else {
+            not_found(accept_gzip)
+        };
+
+    let status = resp.status().as_u16();
+    let elapsed = start.elapsed().as_millis();
+    log::info!("[ACCESS] {} {} -> {} ({}ms)", method, path, status, elapsed);
+    Ok(resp)
 }
 
 /// 尝试匹配 API 路由。返回 None 表示不匹配。
@@ -52,6 +75,7 @@ async fn try_route_api(
     mut req: Request,
     state: &AppState,
     accept_gzip: bool,
+    _is_debug: bool,
 ) -> Option<AppResponse> {
     // 健康端点：无鉴权，供固件启动时探测后端 scheme（HTTP vs HTTPS）
     if path == "/api/health" && method == Method::GET {
@@ -60,6 +84,16 @@ async fn try_route_api(
             &serde_json::json!({"status":"ok","version":"0.3.1"}),
             accept_gzip,
         ));
+    }
+    // 配网配置：无鉴权，返回本服务地址与 token 供前端 Web Serial 弹窗自动填充
+    if path == "/api/config" && method == Method::GET {
+        return Some(provisioning::handle_get_config(state, accept_gzip).await);
+    }
+    // 轮速遥测查询：前端可单独查询设备最新 leftRpm / rightRpm
+    if let Some(device_id) = path.strip_prefix("/api/telemetry/") {
+        if method == Method::GET {
+            return Some(telemetry::handle_get(state, device_id, accept_gzip).await);
+        }
     }
     if let Some(rest) = path.strip_prefix("/api/device/") {
         // rest 形如 "{deviceId}/{action}" 或 "{deviceId}"
@@ -246,4 +280,26 @@ pub fn photo_timeout(accept_gzip: bool) -> AppResponse {
         &serde_json::json!({"error": "photo timeout"}),
         accept_gzip,
     )
+}
+
+/// 判断当前日志级别是否为 debug（用于输出更详细的请求信息）。
+fn is_debug_level(level: &str) -> bool {
+    matches!(level.to_ascii_lowercase().as_str(), "debug" | "trace")
+}
+
+/// 收集请求头为 Vec<(String, String)>，仅用于 debug 日志。
+fn collect_request_headers(headers: &actix_http::header::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            let key = k.as_str().to_string();
+            let val = v.to_str().unwrap_or("<binary>").to_string();
+            // 过滤掉敏感头，避免日志泄露
+            if key.eq_ignore_ascii_case("authorization") {
+                (key, "***".to_string())
+            } else {
+                (key, val)
+            }
+        })
+        .collect()
 }

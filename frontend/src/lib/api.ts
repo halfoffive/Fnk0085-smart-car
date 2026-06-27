@@ -9,6 +9,7 @@ import type {
   PhotoResponse,
   PwmCacheState,
   PwmCacheToggleRequest,
+  TelemetryState,
 } from '../types/protocol';
 
 /** 拼接完整 URL（API_BASE 为空时即同源） */
@@ -108,4 +109,36 @@ export async function postPwmCache(
 export function sliderToPwm(value: number): number {
   const clamped = Math.max(1, Math.min(100, value));
   return Math.round((clamped / 100) * 255);
+}
+
+/** PWM → 滑块值：0-255 线性映射至 1-100 */
+export function pwmToSlider(pwm: number): number {
+  const clamped = Math.max(0, Math.min(255, pwm));
+  return Math.max(1, Math.round((clamped / 255) * 100));
+}
+
+/** GET /api/telemetry/{deviceId} — 查询左右轮速 */
+export async function getTelemetry(
+  deviceId: string,
+  signal?: AbortSignal,
+): Promise<TelemetryState> {
+  if (!isValidDeviceId(deviceId)) {
+    throw new Error(`Invalid deviceId: ${deviceId}`);
+  }
+  const res = await fetch(url(`/api/telemetry/${encodeURIComponent(deviceId)}`), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  return handle<TelemetryState>(res);
+}
+
+/** GET /api/config — 获取本服务地址与 token，供 Web Serial 配网弹窗自动填充 */
+export async function getProvisioning(signal?: AbortSignal): Promise<{ server: string; token: string }> {
+  const res = await fetch(url('/api/config'), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  return handle<{ server: string; token: string }>(res);
 }

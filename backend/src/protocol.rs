@@ -21,9 +21,15 @@ use serde::{Deserialize, Serialize};
     rename_all_fields = "camelCase"
 )]
 pub enum DeviceEvent {
+    /// 设备注册（仅应在 /register 端点使用，event 端点拒绝）
     Register { device_id: String, token: String },
+    /// 拍照完成回执
     PhotoDone { path: String, uptime_ms: u64 },
+    /// 长轮询 Ping 应答
     Ack { ref_seq: u32 },
+    /// 设备上报的左右轮速（单位：RPM）
+    Telemetry { left_rpm: i32, right_rpm: i32 },
+    /// 通用错误上报
     Error { code: i32, message: String },
 }
 

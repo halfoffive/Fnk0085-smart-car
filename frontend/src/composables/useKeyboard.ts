@@ -1,4 +1,4 @@
-// WASD 键盘 composable：监听 keydown/keyup，触发回调（仅当方向键被按下/释放时调用）
+// WASD 键盘 composable：监听 keydown/keyup，触发方向回调；上下箭头调速。
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Direction } from '../types/protocol';
@@ -8,9 +8,7 @@ const KEY_MAP: Record<string, Direction> = {
   KeyA: 'A',
   KeyS: 'S',
   KeyD: 'D',
-  ArrowUp: 'W',
   ArrowLeft: 'A',
-  ArrowDown: 'S',
   ArrowRight: 'D',
 };
 
@@ -19,19 +17,37 @@ export interface UseKeyboardOptions {
   onPress: (dir: Direction) => void;
   /** 某方向被释放 */
   onRelease: (dir: Direction) => void;
+  /** 速度增减（slider 单位，如 +5 / -5） */
+  onSpeedDelta?: (delta: number) => void;
   /** 是否启用（响应式 getter） */
   enabled?: () => boolean;
 }
 
 /** 当前被按下的方向集合响应式引用 */
 export function useKeyboard(opts: UseKeyboardOptions) {
-  const { onPress, onRelease, enabled = () => true } = opts;
+  const { onPress, onRelease, onSpeedDelta, enabled = () => true } = opts;
   const pressed = ref<Set<Direction>>(new Set());
+
+  const isInputFocused = (e: KeyboardEvent) =>
+    e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
 
   const handleDown = (e: KeyboardEvent) => {
     if (!enabled()) return;
     if (e.repeat) return;
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (isInputFocused(e)) return;
+
+    // 速度键：上下箭头
+    if (e.code === 'ArrowUp') {
+      e.preventDefault();
+      onSpeedDelta?.(+5);
+      return;
+    }
+    if (e.code === 'ArrowDown') {
+      e.preventDefault();
+      onSpeedDelta?.(-5);
+      return;
+    }
+
     const dir = KEY_MAP[e.code];
     if (!dir) return;
     e.preventDefault();

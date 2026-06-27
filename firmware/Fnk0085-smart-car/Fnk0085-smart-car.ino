@@ -193,8 +193,9 @@ QueueHandle_t        cmdQueue = NULL;  // pollTask → loop 的指令队列
 TaskHandle_t         pollTaskHandle = NULL;
 SemaphoreHandle_t    httpsMutex = NULL;  // 保护 httpsClient 并发访问（pollTask / videoTask / loop 三方）
 
-// 拍照互斥（防止视频任务与拍照竞争传感器）
-portMUX_TYPE photoMux = portMUX_INITIALIZER_UNLOCKED;
+// 拍照互斥（防止视频任务与拍照竞争 SCCB / 帧缓冲）
+// 使用二进制信号量而非自旋锁：videoTask 可非阻塞尝试获取，避免 10fps 节奏被拍照拖住
+SemaphoreHandle_t photoMux = NULL;
 volatile bool photoInProgress = false;
 
 // 视频任务句柄（vTaskSuspend/Resume 用）
@@ -227,6 +228,7 @@ void sendRegister();
 void sendPhotoDone(const String& path, uint32_t uptimeMs);
 void sendAck(int refSeq);
 void sendError(int code, const String& msg);
+void sendTelemetry(uint32_t leftRpm, uint32_t rightRpm);
 void pollTask(void* arg);
 void dispatchCommands();
 
@@ -720,7 +722,9 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
     http2.end();
     httpsLockGive();
     if (retryCode != 200 && retryCode != 204) {
-      log_e("[FRAME] POST 失败 code=%d len=%u", retryCode, (unsigned)len);
+      Serial.printf("[FRAME] POST failed code=%d len=%u, https=%d\n",
+                    retryCode, (unsigned)len,
+                    (useHttps && !httpsHandshakeFailed) ? 1 : 0);
     }
     return retryCode;
   }
@@ -731,7 +735,9 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   http.end();
   httpsLockGive();
   if (code != 200 && code != 204) {
-    log_e("[FRAME] POST 失败 code=%d len=%u", code, (unsigned)len);
+    Serial.printf("[FRAME] POST failed code=%d len=%u, https=%d\n",
+                  code, (unsigned)len,
+                  (useHttps && !httpsHandshakeFailed) ? 1 : 0);
   }
   return code;
 }
@@ -796,6 +802,22 @@ void sendError(int code, const String& msg) {
   int httpCode = httpsPost(url, body, resp);
   if (httpCode != 200) {
     Serial.printf("[NET] error report failed code=%d\n", httpCode);
+  }
+}
+
+// POST /api/device/{id}/event —— body: {"type":"telemetry","leftRpm":N,"rightRpm":N}
+void sendTelemetry(uint32_t leftRpm, uint32_t rightRpm) {
+  JsonDocument doc;
+  doc["type"]    = "telemetry";
+  doc["leftRpm"]  = (int)leftRpm;
+  doc["rightRpm"] = (int)rightRpm;
+  String body;
+  serializeJson(doc, body);
+  String url = "/api/device/" + deviceId + "/event";
+  String resp;
+  int httpCode = httpsPost(url, body, resp);
+  if (httpCode != 200) {
+    Serial.printf("[NET] telemetry failed code=%d\n", httpCode);
   }
 }
 
@@ -871,9 +893,9 @@ void dispatchCommands() {
 
 /* =================================================================
  * 视频采集任务（FreeRTOS，core 0）
- * 流程：esp_camera_fb_get() → httpsPostFrame() → esp_camera_fb_return()
+ * 流程：xSemaphoreTake(photoMux) → esp_camera_fb_get() → httpsPostFrame() → esp_camera_fb_return() → xSemaphoreGive(photoMux)
  * 节奏控制：vTaskDelayUntil 保证 10fps；POST 失败直接丢帧（不重试）
- * 拍照互斥：photoInProgress 期间跳过采集（与 vTaskSuspend 双重保护）
+ * 拍照互斥：photoMux 被占用时跳过本帧，避免与 handlePhoto 竞争 SCCB
  * ================================================================= */
 void videoTask(void* arg) {
   Serial.println("[TASK] video started");
@@ -882,11 +904,15 @@ void videoTask(void* arg) {
   TickType_t lastWake = xTaskGetTickCount();
   for (;;) {
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(VIDEO_FRAME_INTERVAL_MS));
-    // 拍照进行中跳过（双重保护：vTaskSuspend + 此标志）
-    if (photoInProgress) continue;
+
+    // 拍照互斥：非阻塞尝试获取信号量；失败说明 handlePhoto 正在占用 SCCB
+    if (photoMux == NULL || xSemaphoreTake(photoMux, 0) != pdPASS) {
+      continue;
+    }
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
+      xSemaphoreGive(photoMux);
       vTaskDelay(pdMS_TO_TICKS(50));
       continue;
     }
@@ -898,11 +924,12 @@ void videoTask(void* arg) {
       frameFail++;
     }
     esp_camera_fb_return(fb);
+    xSemaphoreGive(photoMux);
 
     // 每 10 帧汇总一次状态
     uint32_t total = frameOk + frameFail;
     if (total > 0 && total % 10 == 0) {
-      log_i("[VIDEO] ok=%u fail=%u", (unsigned)frameOk, (unsigned)frameFail);
+      Serial.printf("[VIDEO] frames ok=%u fail=%u\n", (unsigned)frameOk, (unsigned)frameFail);
     }
   }
 }
@@ -945,25 +972,41 @@ void handleControl(const JsonDocument& doc) {
 }
 
 // type=photo：UXGA 拍照写 SD
+// 通过 photoMux 二进制信号量与 videoTask 互斥，避免 SCCB 竞争导致 SCCB_Write failed
 void handlePhoto() {
-  // 1. 暂停视频流任务（防止竞争传感器）
-  if (videoTaskHandle) vTaskSuspend(videoTaskHandle);
+  if (photoMux == NULL) {
+    sendError(5002, "photo mutex not initialized");
+    return;
+  }
+
+  // 1. 获取拍照独占权（阻塞等待 videoTask 释放当前帧）
+  if (xSemaphoreTake(photoMux, portMAX_DELAY) != pdPASS) {
+    sendError(5002, "photo mutex take failed");
+    return;
+  }
   photoInProgress = true;
 
-  // 2. 切换 UXGA + quality=4
+  // 2. 等待一帧间隔，让 videoTask 完成当前帧缓冲释放，减少 SCCB 冲突
+  vTaskDelay(pdMS_TO_TICKS(300));
+
+  // 3. 切换 UXGA + quality=4
   sensor_t* s = esp_camera_sensor_get();
   if (s) {
     s->set_framesize(s, FRAMESIZE_UXGA);
     s->set_quality(s, 4);
   }
 
-  // 3. 采集一帧
+  // 4. 给传感器留出稳定时间后再采集
+  vTaskDelay(pdMS_TO_TICKS(200));
+
+  // 5. 采集一帧
   camera_fb_t* fb = esp_camera_fb_get();
   uint32_t uptime = millis();
 
-  // 4. 写 SD
+  // 6. 写 SD
   bool ok = false;
   String path = "";
+  String failReason = "";
   if (fb) {
     path = String(PHOTO_DIR) + "/photo_" + String(uptime) + ".jpg";
     File f = SD_MMC.open(path, FILE_WRITE);
@@ -972,28 +1015,31 @@ void handlePhoto() {
       f.close();
       ok = true;
     } else {
-      Serial.println("[PHOTO] open file failed");
+      failReason = "sd open failed";
+      Serial.printf("[PHOTO] failed: %s\n", failReason.c_str());
     }
     esp_camera_fb_return(fb);
   } else {
-    Serial.println("[PHOTO] capture failed");
+    failReason = "capture failed";
+    Serial.printf("[PHOTO] failed: %s\n", failReason.c_str());
   }
 
-  // 5. 恢复 QVGA + quality=5（与 cameraInit 一致，避免帧质量降级）
+  // 7. 恢复 QVGA + quality=5（与 cameraInit 一致，保证视频流继续）
   if (s) {
     s->set_framesize(s, FRAMESIZE_QVGA);
     s->set_quality(s, 5);
   }
 
-  // 6. 恢复视频流任务
+  // 8. 给传感器留出恢复时间后再释放信号量，让视频流继续
+  vTaskDelay(pdMS_TO_TICKS(100));
   photoInProgress = false;
-  if (videoTaskHandle) vTaskResume(videoTaskHandle);
+  xSemaphoreGive(photoMux);
 
-  // 7. 发 photo_done 回执
+  // 9. 发 photo_done 回执或 error 事件，避免后端 photo 端点一直挂起
   if (ok) {
     sendPhotoDone(path, uptime);
   } else {
-    sendError(5002, "photo capture or sd write failed");
+    sendError(5002, failReason);
   }
 }
 
@@ -1301,6 +1347,15 @@ void setup() {
     ESP.restart();
   }
 
+  // 拍照二进制信号量：初始化 give 一次，使首次 take 可成功
+  photoMux = xSemaphoreCreateBinary();
+  if (photoMux == NULL) {
+    Serial.println("[BOOT] photoMux create failed, rebooting in 5s");
+    delay(5000);
+    ESP.restart();
+  }
+  xSemaphoreGive(photoMux);
+
   // 初始化 PID 状态
   memset(&pidState, 0, sizeof(pidState));
 
@@ -1333,6 +1388,13 @@ void loop() {
     lastEncSample = now;
     encoderSample();
 
+    // 计算轮速（供 PID 与 telemetry 共用）
+    uint32_t leftRpm  = getLeftRpm();
+    uint32_t rightRpm = getRightRpm();
+
+    // 3. 上报轮速 telemetry（即发即弃，失败仅记录日志）
+    sendTelemetry(leftRpm, rightRpm);
+
     // 2.4 PID 周期消费：仅在 "W" 前进时运行
     if (targetDirection == "W" && targetPwm > 0) {
       int targetRpm = (int)((float)targetPwm / PWM_MAX * MAX_TARGET_RPM);
@@ -1343,8 +1405,6 @@ void loop() {
         setMotor(cachedPwm, cachedPwm);
       } else {
         // PID 计算（纯函数：传入传出 state）
-        uint32_t leftRpm  = getLeftRpm();
-        uint32_t rightRpm = getRightRpm();
         PidState next;
         MotorPWM m = computePid(targetRpm, leftRpm, rightRpm, pidState, next);
         pidState = next;

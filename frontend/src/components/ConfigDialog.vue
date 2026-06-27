@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Web Serial 配网弹窗：表单 → 选串口 → 发送 CONFIG → 等 OK / REBOOT
 import { onBeforeUnmount, ref, watch } from 'vue';
+import { getProvisioning } from '../lib/api';
 import { useWebSerial } from '../composables/useWebSerial';
 
 const props = defineProps<{
@@ -17,6 +18,8 @@ const { supported, connecting, log, configure } = useWebSerial();
 const form = ref({ ssid: '', password: '', server: '', token: '' });
 const resultMsg = ref<string | null>(null);
 const resultOk = ref<boolean | null>(null);
+const provisioningLoading = ref(false);
+const provisioningError = ref<string | null>(null);
 
 // 关闭时复位
 watch(
@@ -25,6 +28,37 @@ watch(
     if (!open) {
       resultMsg.value = null;
       resultOk.value = null;
+      provisioningError.value = null;
+    }
+  },
+);
+
+// 根据当前浏览器地址构造 server 自动填充值（scheme://host:port）
+function currentServerFromLocation(): string {
+  const proto = window.location.protocol; // 'http:' 或 'https:'
+  if (!proto.startsWith('http')) return '';
+  const port = window.location.port || (proto === 'https:' ? '443' : '80');
+  return `${proto}//${window.location.hostname}:${port}`;
+}
+
+// 打开弹窗时自动填充 server / token
+watch(
+  () => props.open,
+  async (open) => {
+    if (!open) return;
+    provisioningLoading.value = true;
+    provisioningError.value = null;
+    try {
+      const cfg = await getProvisioning();
+      // server 优先使用当前浏览器访问地址，用户可修改
+      const currentServer = currentServerFromLocation();
+      form.value.server = currentServer || `http://${cfg.server}`;
+      form.value.token = cfg.token;
+    } catch (e) {
+      provisioningError.value = e instanceof Error ? e.message : String(e);
+      // 失败时保留用户可能已填写的值，不覆盖
+    } finally {
+      provisioningLoading.value = false;
     }
   },
 );
@@ -54,29 +88,42 @@ function setField(key: keyof typeof form.value, v: string) {
   form.value = { ...form.value, [key]: v };
 }
 
-// 校验 server 字段：支持 hostname / IPv4 / [IPv6] + :port
+// 校验 server 字段：须带 http:// 或 https:// scheme + hostname / IPv4 / [IPv6] + :port
 // 返回 null 表示合法，否则返回中文错误描述
 function validateServer(input: string): string | null {
   const s = input.trim();
   if (!s) return '服务器地址不能为空';
+
+  // scheme
+  let rest: string;
+  if (s.startsWith('https://')) {
+    rest = s.slice(8);
+  } else if (s.startsWith('http://')) {
+    rest = s.slice(7);
+  } else {
+    return '地址须以 http:// 或 https:// 开头';
+  }
+  if (!rest) return 'scheme 后须接 host:port';
+
   let host: string;
   let portStr: string;
-  if (s.startsWith('[')) {
+  if (rest.startsWith('[')) {
     // IPv6 字面量：[::1]:8080
-    const close = s.indexOf(']');
+    const close = rest.indexOf(']');
     if (close < 1) return 'IPv6 地址缺少 ]';
-    host = s.slice(1, close);
-    if (s[close + 1] !== ':') return 'IPv6 地址后必须跟 :port';
-    portStr = s.slice(close + 2);
+    host = rest.slice(1, close);
+    if (rest[close + 1] !== ':') return 'IPv6 地址后必须跟 :port';
+    portStr = rest.slice(close + 2);
   } else {
-    const colon = s.lastIndexOf(':');
-    if (colon <= 0) return '格式应为 host:port（例如 192.168.1.10:8080）';
-    host = s.slice(0, colon);
-    portStr = s.slice(colon + 1);
+    const colon = rest.lastIndexOf(':');
+    if (colon <= 0) return '格式应为 scheme://host:port';
+    host = rest.slice(0, colon);
+    portStr = rest.slice(colon + 1);
   }
+
   if (!host) return '主机名不能为空';
   if (host.length > 253) return '主机名过长（>253）';
-  // 主机名合法字符：字母数字 . - （IPv4 也满足）
+  // 主机名合法字符：字母数字 . - （IPv4 也满足；IPv6 已单独处理）
   if (!/^[A-Za-z0-9.\-]+$/.test(host)) return '主机名含非法字符';
   if (!/^\d{1,5}$/.test(portStr)) return '端口必须为 1-5 位数字';
   const port = parseInt(portStr, 10);
@@ -180,14 +227,14 @@ function onBackdropClick(e: MouseEvent) {
         <!-- 服务器地址 -->
         <label class="block">
           <div class="font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint mb-1">
-            服务器地址 (host:port)
+            服务器地址 (scheme://host:port)
           </div>
           <input
             type="text"
             :value="form.server"
             @input="(e) => setField('server', (e.target as HTMLInputElement).value)"
-            placeholder="192.168.1.10:8080"
-            :disabled="connecting"
+            placeholder="http://192.168.1.10:8080"
+            :disabled="connecting || provisioningLoading"
             class="w-full bg-surface-2 border border-border-bright focus:border-accent focus:outline-none px-3 py-2 text-sm text-ink placeholder:text-ink-faint/50 disabled:opacity-50 transition-colors font-sans"
             autocomplete="off"
             :spellcheck="false"
@@ -204,12 +251,26 @@ function onBackdropClick(e: MouseEvent) {
             :value="form.token"
             @input="(e) => setField('token', (e.target as HTMLInputElement).value)"
             placeholder="Bearer ..."
-            :disabled="connecting"
+            :disabled="connecting || provisioningLoading"
             class="w-full bg-surface-2 border border-border-bright focus:border-accent focus:outline-none px-3 py-2 text-sm text-ink placeholder:text-ink-faint/50 disabled:opacity-50 transition-colors font-mono"
             autocomplete="off"
             :spellcheck="false"
           />
         </label>
+
+        <!-- 自动填充状态 -->
+        <div
+          v-if="provisioningLoading"
+          class="px-3 py-2 border-l-2 border-accent bg-accent/10 text-accent font-mono text-[11px]"
+        >
+          ⟳ 正在读取后端配置…
+        </div>
+        <div
+          v-else-if="provisioningError"
+          class="px-3 py-2 border-l-2 border-warning bg-warning/10 text-warning font-mono text-[11px]"
+        >
+          读取配置失败：{{ provisioningError }}，请手动填写 server / token。
+        </div>
 
         <!-- 结果提示 -->
         <div

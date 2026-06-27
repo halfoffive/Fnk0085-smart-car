@@ -9,11 +9,16 @@
 ### Added
 - 后端新增 `GET /api/health` 健康端点（无鉴权，返回 `{"status":"ok","version":"0.3.1"}`），用于固件启动 scheme 探测与运维监控
 - 固件启动主动探测 HTTP/HTTPS scheme：WiFi 关联 + SNTP 同步后、首次 register 之前调用 `probeScheme()`，先试 NVS 配的 scheme，失败再试另一 scheme，成功则切换并写回 NVS（auto-correct），冷启动不再刷 TLS 错误日志
+- 协议新增 `type=telemetry` 上行事件：固件在 `loop()` 100ms 编码器采样处计算左右轮速后，通过 `POST /api/device/{id}/event` 上报 `{"type":"telemetry","leftRpm":N,"rightRpm":N}`；后端 `DeviceEvent` 新增 `Telemetry` variant 并持久化到设备状态；前端 `GET /api/devices` 透传 `leftRpm`/`rightRpm` 并在状态条显示
+- 后端新增 `GET /api/telemetry/{deviceId}` 返回设备左右轮速（`{"leftRpm":..., "rightRpm":...}`，设备不在线返回 404）；新增 `GET /api/config` 无鉴权返回 `{"server":"host:port","token":"..."}`，供 Web Serial 配网弹窗自动填充；`AppState` 新增 `log_level`/`server_addr` 字段；路由入口统一输出 `[ACCESS] <method> <path> -> <status> (<duration>ms)` 访问日志，debug 模式额外打印请求头与查询串
 
 ### Fixed
+- 修复拍照时 SCCB 竞争导致的 `SCCB_Write Failed addr:0x30 ... ret:259` 与 `[PHOTO] capture failed`：引入 `photoMux` 二进制信号量，`handlePhoto()` 独占 SCCB 期间 `videoTask()` 跳过采集；拍照前后增加 300ms/200ms/100ms 延时稳定传感器；拍照失败通过 `sendError(5002, ...)` 立即上报，避免后端 `POST /api/photo/{id}` 504 挂起
+- 修复/观测视频流缺失：`httpsPostFrame()` 在非 2xx/204 时打印 `[FRAME] POST failed code=%d len=%u, https=%d`；`videoTask()` 每 10 帧打印 `[VIDEO] frames ok=%u fail=%u`；拍照恢复 QVGA 后视频流继续
 - 修复后端 `GET /api/devices` 字段命名（`deviceId`/`lastSeenMs`）与 `protocol.md` 一致
 - 修复前端视频 Worker 错误地把 `Blob` 放入 `postMessage` transfer list 导致首帧崩溃
 - 修复固件 SNTP 同步判断可能把负错误码误判为成功
+- 修复前端 ConfigDialog 自动填充的 server 缺少 scheme 导致校验失败的问题：现在自动填充为 `http(s)://host:port`（默认端口补全 80/443），且 server 字段校验强制要求 `http://` 或 `https://` scheme
 - 增加固件 `handleControl` 串口日志，便于确认 WASD 指令到达
 
 ### Changed
