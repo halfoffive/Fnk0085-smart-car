@@ -70,6 +70,9 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - **固件日志 `[TLS] lastErr=-0x2700 ...`**：mbedTLS 错误码 `-0x2700` 是 `MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE`，常见于对端拒绝 TLS（如对端是明文 HTTP 服务）；`-0x7780` 是 `MBEDTLS_ERR_SSL_CONN_EOF`（对端关闭连接）。完整码表见 `mbedtls/error.h`
 - **前端 devtools 报 `404 {"deviceId":"%E2%97%8F%20online","error":"device not found"}`**：URL 解码 `%E2%97%8F%20online` = `● online`，根因是 `DeviceSelect.vue` 的 `<option>` textContent 附加了状态指示符 `● online` / `○ offline` 后缀，浏览器对 `<option :value>` 的边缘处理 fallback 到 textContent 时把整串 `● online` 当作 deviceId 提取。已修复：option textContent 简化为只显示 `d.deviceId`，状态指示符仅由 selectedDevice 状态条渲染；`frontend/src/lib/validate.ts` 的 `isValidDeviceId` 在 4 个 API 函数（postControl / postPhoto / getPwmCache / postPwmCache）+ videoWorker start 入口拦截非法 deviceId，非法时直接 throw 不发请求。
 - **固件日志 `[BOOT] setup done` 后立即出现 `ESP-ROM:esp32s3-20210327 / rst:0x1 (POWERON)`**：根因是 videoTask / pollTask 栈溢出（8192 字节不够 HTTPClient + WiFiClientSecure + TLS 握手栈占用）。已修复：`POLL_TASK_STACK` 与新增 `VIDEO_TASK_STACK` 常量均提升到 16384 字节；任务入口打印 `[TASK] video/poll started` 心跳；setup 末尾 `[BOOT] setup done` 之后校验任务句柄非 NULL，失败时打印 `[BOOT] task create failed, rebooting in 5s` 并延时重启，成功时打印 `[BOOT] tasks launched`。
+- 固件启动主动探测后端 scheme：WiFi 关联 + SNTP 同步后、首次 register 之前调用 `probeScheme()`，先探测 NVS 配的 scheme（GET /api/health），失败则试另一 scheme，成功则切换 `useHttps` + 写回 NVS（auto-correct），探测期间静默 TLS 错误。冷启动日志应只出现 `[NET] probe: <scheme> ok, using <scheme>` 或 `[NET] probe: <old> failed (code=<n>), <new> ok, switching to <new> (NVS updated)`
+- 后端 `/api/health` 端点：`GET /api/health` 无鉴权，返回 200 + `{"status":"ok","version":"0.3.1"}`，用于固件启动 scheme 探测与运维监控
+- 后端 HTTP/2 h2c 支持情况：`actix-http` 启用 `http2` feature + `tcp_auto_h2c()` 协商明文 HTTP/2，nginx 反代或 h2c 客户端可用 HTTP/2；固件受 ESP32 Arduino `HTTPClient` 库限制仍走 HTTP/1.1；HTTP/3 (QUIC) 在 ESP32 上不可行
 
 ## 协议改动清单
 

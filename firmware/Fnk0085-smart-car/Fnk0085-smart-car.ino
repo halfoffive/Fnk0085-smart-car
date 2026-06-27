@@ -1,6 +1,6 @@
 /* =================================================================
  * Fnk0085-smart-car.ino —— ESP32-S3 智能小车固件主入口
- * 版本：v0.3.0（与 backend/Cargo.toml、frontend/package.json 同步）
+ * 版本：v0.3.1（与 backend/Cargo.toml、frontend/package.json 同步）
  * -----------------------------------------------------------------
  * 硬件平台：Freenove ESP32-S3 WROOM（带 PSRAM） + OV2640 + L298N + 槽型对射编码器
  * 功能模块：
@@ -221,6 +221,8 @@ String generateDeviceId();
 int  httpsPost(const String& path, const String& body, String& respOut);
 int  httpsGet(const String& path, String& respOut);
 int  httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs);
+int  probeHealth(bool useTls);
+bool probeScheme();
 void sendRegister();
 void sendPhotoDone(const String& path, uint32_t uptimeMs);
 void sendAck(int refSeq);
@@ -515,9 +517,61 @@ void logTlsAndHttpError(HTTPClient& http, int code, const char* tag) {
   if (useHttps && !httpsHandshakeFailed) {
     char errBuf[128] = {0};
     int tlsErr = httpsClient.lastError(errBuf, sizeof(errBuf));
-    Serial.printf("[TLS] %s lastErr=%d %s\n", tag, tlsErr, errBuf);
+    Serial.printf("[TLS] %s handshake failed: code=%d %s (backend may be plain HTTP)\n", tag, tlsErr, errBuf);
   }
   Serial.printf("[HTTP] %s error=%d %s\n", tag, code, http.errorToString(code).c_str());
+}
+
+// 探测后端 /api/health 端点可用性（启动时 scheme 检测，2s 超时）
+// useTls=true 用 httpsClient，false 用 plainClient；返回 HTTP 状态码（200 成功，<0 网络/握手错误）
+// 静默执行（不调用 logTlsAndHttpError），失败时仅返回 code 由调用方决策
+int probeHealth(bool useTls) {
+  HTTPClient http;
+  String url = (useTls ? "https://" : "http://") + backendHost + ":" + String(backendPort) + "/api/health";
+  bool ok = useTls ? http.begin(httpsClient, url) : http.begin(plainClient, url);
+  if (!ok) {
+    Serial.printf("[NET] probe begin failed: %s\n", url.c_str());
+    return -1;
+  }
+  http.setTimeout(2000);
+  int code = http.GET();
+  http.end();
+  return code;
+}
+
+// 启动时主动探测后端 scheme：先试 NVS 配的 scheme，失败则试另一 scheme
+// - NVS scheme ok：保持原 scheme，返回 true
+// - NVS scheme 失败 + 另一 scheme ok：切换 useHttps、重置 httpsHandshakeFailed、写回 NVS，返回 true
+// - 两个都失败：打印总结日志，保留原 scheme，返回 false（依赖 https-fallback-and-diagnostics 兜底）
+bool probeScheme() {
+  bool nvSchemeHttps = useHttps;
+  int code1 = probeHealth(nvSchemeHttps);
+  if (code1 == 200) {
+    Serial.printf("[NET] probe: %s ok, using %s\n",
+                  nvSchemeHttps ? "https" : "http",
+                  nvSchemeHttps ? "https" : "http");
+    return true;
+  }
+  int code2 = probeHealth(!nvSchemeHttps);
+  if (code2 == 200) {
+    useHttps = !nvSchemeHttps;
+    httpsHandshakeFailed = false;
+    String newServer = (useHttps ? "https://" : "http://") + backendHost + ":" + String(backendPort);
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putString("server", newServer);
+    prefs.end();
+    Serial.printf("[NET] probe: %s failed (code=%d), %s ok, switching to %s (NVS updated)\n",
+                  nvSchemeHttps ? "https" : "http", code1,
+                  useHttps ? "https" : "http",
+                  useHttps ? "https" : "http");
+    return true;
+  }
+  Serial.printf("[NET] probe failed: http=%d, https=%d, fallback to NVS scheme=%s\n",
+                nvSchemeHttps ? code2 : code1,
+                nvSchemeHttps ? code1 : code2,
+                nvSchemeHttps ? "https" : "http");
+  return false;
 }
 
 // POST JSON 到指定 path；返回 HTTP 状态码（>=200），<0 为网络/协议错误
@@ -1226,6 +1280,9 @@ void setup() {
   httpsClient.setInsecure();
   httpsClient.setTimeout(POLL_HTTP_TIMEOUT_MS);
   Serial.println("[HTTPS] client ready (setInsecure mode)");
+
+  // 启动时主动探测后端 scheme（避免冷启动刷 TLS 错误日志）；探测失败不阻塞 register
+  probeScheme();
 
   // 指令队列（pollTask → loop）
   cmdQueue = xQueueCreate(CMD_QUEUE_LEN, sizeof(String*));

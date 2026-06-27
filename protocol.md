@@ -7,7 +7,7 @@
 
 ## 1. 视频帧上传（设备 → 后端）
 
-视频流走 HTTP/HTTPS（HTTP/1.1 keep-alive），与控制平面共用同一端口（默认 8080）。设备端按 `server` 配置字段 scheme 选择 `WiFiClient`（明文，直连后端）或 `WiFiClientSecure::setInsecure()`（信任所有证书，经 nginx 反代）。后端明文 HTTP（启 `http2` feature 支持 h2c 协商，HTTP/1.1 回退）；对外由 nginx 反代终止 TLS（HTTP/2 over TLS + HTTP/3 over QUIC）。控制指令与事件走第 2 节端点。
+视频流走 HTTP/HTTPS（HTTP/1.1 keep-alive），与控制平面共用同一端口（默认 8080）。设备端按 `server` 配置字段 scheme 选择 `WiFiClient`（明文，直连后端）或 `WiFiClientSecure::setInsecure()`（信任所有证书，经 nginx 反代）。后端明文 HTTP（启 `http2` feature + `tcp_auto_h2c()` 协商明文 HTTP/2 h2c，nginx 反代或 h2c 客户端可用 HTTP/2；HTTP/1.1 回退；固件受 ESP32 Arduino `HTTPClient` 库限制仍走 HTTP/1.1）；对外由 nginx 反代终止 TLS（HTTP/2 over TLS + HTTP/3 over QUIC）。控制指令与事件走第 2 节端点。
 
 ### 1.1 端点
 
@@ -233,7 +233,19 @@ X-Latency-Ms: <int>\r\n
 {"ok": true}
 ```
 
-### 3.7 静态资源
+### 3.7 GET /api/health
+
+无鉴权健康端点（不携带 token，不绑定设备），用于固件启动时探测后端 scheme 与运维监控。
+
+响应（200 OK，`Content-Type: application/json`）：
+
+```json
+{"status": "ok", "version": "0.3.1"}
+```
+
+固件 `probeScheme()` 在 WiFi 关联 + SNTP 同步后、首次 register 之前调用本端点：先试 NVS 配的 scheme（`http://` 或 `https://`），失败再试另一 scheme，成功则切换 `useHttps` 并写回 NVS（auto-correct）。
+
+### 3.8 静态资源
 
 - `GET /` → 返回 `index.html`（内嵌前端 PWA）
 

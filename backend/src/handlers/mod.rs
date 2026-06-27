@@ -53,6 +53,14 @@ async fn try_route_api(
     state: &AppState,
     accept_gzip: bool,
 ) -> Option<AppResponse> {
+    // 健康端点：无鉴权，供固件启动时探测后端 scheme（HTTP vs HTTPS）
+    if path == "/api/health" && method == Method::GET {
+        return Some(json_response(
+            StatusCode::OK,
+            &serde_json::json!({"status":"ok","version":"0.3.1"}),
+            accept_gzip,
+        ));
+    }
     if let Some(rest) = path.strip_prefix("/api/device/") {
         // rest 形如 "{deviceId}/{action}" 或 "{deviceId}"
         let (device_id, action) = match rest.find('/') {

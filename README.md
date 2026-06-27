@@ -104,7 +104,8 @@ bun run dev        # 开发模式
 4. 烧录后串口（115200）会进入配网等待状态，发送 `CONFIG\n` 可查询已存配置
 5. 通过前端 Web Serial 弹窗一键下发 `CONFIG|ssid=...|password=...|server=<scheme>://<host:port>|token=...` 至 NVS（`server` 字段须带 `http://` 或 `https://` scheme）；设备收到后自动重启并连接
 6. **`server` scheme 与后端实际协议匹配**：直连后端明文 HTTP 用 `http://<host>:8080`；经 nginx 反代用 `https://<域名>`。若不匹配（如 NVS 残留 `https://` 但后端明文），固件首次 TLS 握手失败后会自动回退到明文 HTTP 重试（session 内 sticky），日志可见 `[TLS] lastErr=...` 与 `[HTTP] error=-1 ...`；建议生产环境配 nginx 反代用 HTTPS
-7. 参考引脚见 [camera_pins.h](firmware/Fnk0085-smart-car/camera_pins.h)；SD_MMC 引脚硬连线 CLK=39 / CMD=38 / D0=40（与 Freenove 板一致）
+7. **启动自动探测 scheme（auto-correct）**：固件在 WiFi 关联 + SNTP 同步后、首次 register 之前调用 `probeScheme()`，先试 NVS 配的 scheme（GET `/api/health`），失败再试另一 scheme，成功则切换 `useHttps` 并写回 NVS。冷启动日志应只出现 `[NET] probe: <scheme> ok, using <scheme>` 或 `[NET] probe: <old> failed (code=<n>), <new> ok, switching to <new> (NVS updated)`，无需手动改 NVS
+8. 参考引脚见 [camera_pins.h](firmware/Fnk0085-smart-car/camera_pins.h)；SD_MMC 引脚硬连线 CLK=39 / CMD=38 / D0=40（与 Freenove 板一致）
 
 ### 5. 访问
 

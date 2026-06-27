@@ -1,8 +1,22 @@
 # Changelog
 
-本项目版本号统一：固件 / 后端 / 前端共享 `0.3.0`。前端 PWA 缓存键带版本号，版本变更时自动清理旧缓存。
+本项目版本号统一：固件 / 后端 / 前端共享 `0.3.1`。前端 PWA 缓存键带版本号，版本变更时自动清理旧缓存。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+## [0.3.1] - 2026-06-27
+
+### Added
+- 后端新增 `GET /api/health` 健康端点（无鉴权，返回 `{"status":"ok","version":"0.3.1"}`），用于固件启动 scheme 探测与运维监控
+- 固件启动主动探测 HTTP/HTTPS scheme：WiFi 关联 + SNTP 同步后、首次 register 之前调用 `probeScheme()`，先试 NVS 配的 scheme，失败再试另一 scheme，成功则切换并写回 NVS（auto-correct），冷启动不再刷 TLS 错误日志
+
+### Changed
+- 固件 `logTlsAndHttpError` HTTPS 模式 TLS 失败措辞改善：从 `[TLS] <tag> lastErr=<n> <desc>` 改为 `[TLS] <tag> handshake failed: code=<n> <desc> (backend may be plain HTTP)`，明确指出可能 scheme 不匹配（而非误导的 `connection refused`）
+
+### Note
+- 后端 HTTP/2 h2c 已支持（`actix-http` `http2` feature + `tcp_auto_h2c()`），nginx 反代或 h2c 客户端可用 HTTP/2
+- 固件受 ESP32 Arduino `HTTPClient` 库限制仍走 HTTP/1.1
+- HTTP/3 (QUIC over UDP) 在 ESP32 上不可行，需大量移植工作，不在本版本范围
 
 ## [0.3.0] - 2026-06-27
 
