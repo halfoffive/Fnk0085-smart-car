@@ -31,6 +31,18 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 
 **注意**：build.rs 走的是 `bun.exe`（Windows）/ `bun`（其它平台），需 bun 在 PATH 中。改前端源码后直接 `cargo build`，build.rs 会按 mtime 自动重建 dist。
 
+## CI/CD
+
+`.github/workflows/build-backend.yml` — GitHub Actions 自动构建后端二进制，覆盖 7 个目标平台（Linux gnu/musl × x86_64/aarch64、Windows x86_64、macOS x86_64/aarch64），产物打包后上传至 Amazon S3。
+
+- **触发**：push `master`（版本=`latest`）、push tag `v*`（版本=tag 名）、`workflow_dispatch` 手动触发
+- **构建策略**：原生 `cargo build --target` + 系统交叉编译工具链（不用 `cross`/Docker，因项目无 native C 依赖，且 build.rs 需访问 `../frontend`）
+- **交叉编译工具链**：Linux x86_64-musl 用 `musl-tools`（apt），aarch64-gnu 用 `gcc-aarch64-linux-gnu`（apt），aarch64-musl 用 musl.cc 工具链（wget）
+- **每个 job 先用 bun 预构建前端**，build.rs 的 mtime 检查会跳过重复构建
+- **S3 路径**：`s3://<bucket>/fnk0085-smart-car-backend/<version>/fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`
+- **所需 GitHub Secrets**：`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_REGION`、`S3_BUCKET`
+- **改 workflow 后无需跑 cargo**（纯 YAML），但需确认 YAML 语法正确
+
 ## Windows 环境坑
 
 - 工作目录路径含中文，可能导致 Rust build script panic：设 `$env:CARGO_TARGET_DIR = "C:\temp\fnk0085-target"` 绕过。
