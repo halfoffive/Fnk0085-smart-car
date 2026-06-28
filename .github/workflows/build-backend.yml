@@ -141,7 +141,17 @@ jobs:
             tar czf "$GITHUB_WORKSPACE/${ARCHIVE}.tar.gz" fnk0085-smart-car-backend
           fi
 
+      # 始终上传 artifact，确保构建产物可下载（即使 S3 未配置）
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}
+          path: fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ steps.meta.outputs.ext }}
+          retention-days: 30
+
+      # S3 上传仅在所有 AWS secrets 均已配置时执行
       - name: Configure AWS credentials
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_REGION != '' && secrets.S3_BUCKET != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -149,6 +159,7 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Upload to S3
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_REGION != '' && secrets.S3_BUCKET != '' }}
         shell: bash
         run: |
           aws s3 cp \
