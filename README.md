@@ -156,16 +156,7 @@ GitHub Actions 自动构建后端二进制，覆盖 7 个目标平台（[workflo
 
 **触发条件**：push 到 `master`（版本=`latest`）、push tag `v*`（版本=tag 名）、`workflow_dispatch` 手动触发。
 
-**S3 路径**：`s3://<bucket>/fnk0085-smart-car-backend/<version>/fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`
-
-**所需 GitHub Secrets**：
-
-| Secret | 说明 |
-|--------|------|
-| `AWS_ACCESS_KEY_ID` | AWS 访问密钥 |
-| `AWS_SECRET_ACCESS_KEY` | AWS 秘密密钥 |
-| `AWS_REGION` | S3 桶区域 |
-| `S3_BUCKET` | S3 桶名 |
+**产物下载**：构建完成后从 GitHub Actions 的 Artifacts 区下载 `fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`，保留 30 天。
 
 ## 开发板参考
 
