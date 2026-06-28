@@ -82,13 +82,16 @@ async fn try_route_api(
     if path == "/api/health" && method == Method::GET {
         return Some(json_response(
             StatusCode::OK,
-            &serde_json::json!({"status":"ok","version":"0.3.1"}),
+            &serde_json::json!({"status":"ok","version": env!("CARGO_PKG_VERSION")}),
             accept_gzip,
         ));
     }
     // 前端登录：无鉴权（登录端点本身不要求已登录），校验 frontend_password
     if path == "/api/auth/login" && method == Method::POST {
-        let body = read_body(&mut req).await.ok()?;
+        let body = match read_body(&mut req).await {
+            Ok(b) => b,
+            Err(e) => return Some(bad_request(&format!("读取请求体失败: {e}"), accept_gzip)),
+        };
         return Some(auth::handle_login(state, &body, accept_gzip).await);
     }
     // 配网配置：无鉴权，返回本服务地址与 token 供前端 Web Serial 弹窗自动填充
@@ -109,7 +112,12 @@ async fn try_route_api(
         };
         match action {
             Some("register") if method == Method::POST => {
-                let body = read_body(&mut req).await.ok()?;
+                let body = match read_body(&mut req).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return Some(bad_request(&format!("读取请求体失败: {e}"), accept_gzip))
+                    }
+                };
                 return Some(
                     device_api::handle_register(state, device_id, &body, accept_gzip).await,
                 );
@@ -133,7 +141,10 @@ async fn try_route_api(
     }
     if let Some(rest) = path.strip_prefix("/api/control/") {
         if method == Method::POST {
-            let body = read_body(&mut req).await.ok()?;
+            let body = match read_body(&mut req).await {
+                Ok(b) => b,
+                Err(e) => return Some(bad_request(&format!("读取请求体失败: {e}"), accept_gzip)),
+            };
             return Some(control::handle_post_control(state, rest, &body, accept_gzip).await);
         }
     }
@@ -151,7 +162,12 @@ async fn try_route_api(
         match *method {
             Method::GET => return Some(pwm_cache::handle_get(state, rest, accept_gzip).await),
             Method::POST => {
-                let body = read_body(&mut req).await.ok()?;
+                let body = match read_body(&mut req).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return Some(bad_request(&format!("读取请求体失败: {e}"), accept_gzip))
+                    }
+                };
                 return Some(pwm_cache::handle_post(state, rest, &body, accept_gzip).await);
             }
             _ => {}

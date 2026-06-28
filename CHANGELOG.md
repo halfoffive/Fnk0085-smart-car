@@ -16,6 +16,11 @@
 
 ### Fixed
 
+- 后端新增后台离线检测任务：每 5 秒扫描注册表，设备超过 30 秒未收到 register/frame/event/telemetry 时标记 `online=false`，`/api/devices` 实时反映状态
+- 后端 `/api/health` 版本号改为 `env!("CARGO_PKG_VERSION")`，与 `Cargo.toml` 自动同步，不再硬编码
+- 后端 POST 路由（`/api/auth/login`、`/api/device/{id}/register`、`/api/control/*`、`/api/pwm_cache/*`）读取请求体失败时返回 400 并附带错误信息，不再静默转为 404
+- 后端 `handle_poll` 超时返回的 Ping 占位序列化失败时记录 error 并返回 500 JSON，不再返回空响应
+- 后端修复 `CommandQueue::recv_timeout` 的通知丢失窗口：使用 deadline 控制总等待时间，push 后即时唤醒，避免额外 30 秒等待
 - 固件 `handlePhoto()` 中 `photoMux` 获取超时改为 5000ms，超时路径调用 `sendError(5002, "photo mutex timeout")` 并立即返回，避免 videoTask 异常持锁导致 `loop()` 被阻塞触发看门狗
 - 前端 `useKeyboard` 仅在 `App.vue` 挂载一次；释放方向键时若还有其他方向键被按住不再发送 stop；窗口失焦/组件卸载时释放全部方向键
 - 后端 `DeviceRegistry::get_or_create` 修复 TOCTOU 竞态：通过 `DashMap::entry` + CAS 名额检查将存在性检查与插入合并为原子操作，并发注册测试不超过 `max_devices`

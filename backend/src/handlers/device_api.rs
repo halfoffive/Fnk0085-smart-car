@@ -105,7 +105,17 @@ pub async fn handle_poll(
                 seq: 0,
                 ts: now_ms(),
             };
-            Bytes::from(serde_json::to_vec(&ping).unwrap_or_default())
+            match serde_json::to_vec(&ping) {
+                Ok(v) => Bytes::from(v),
+                Err(e) => {
+                    log::error!("序列化 Ping 失败: {e}");
+                    return json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &serde_json::json!({"error":"internal"}),
+                        accept_gzip,
+                    );
+                }
+            }
         }
     };
     // 直接回吐指令 JSON 字节流

@@ -120,7 +120,7 @@ bun run dev        # 开发模式
 
 | 端点 | 方法 | 鉴权 | 说明 |
 |------|------|------|------|
-| `/api/health` | GET | 无 | 健康探测，返回 `{"status":"ok","version":"0.3.1"}` |
+| `/api/health` | GET | 无 | 健康探测，返回 `{"status":"ok","version":<Cargo.toml 版本>}` |
 | `/api/auth/login` | POST | `{"password":"..."}` | 校验前端访问密码，成功 200 `{"ok":true}`，失败 401 `{"error":"invalid password"}` |
 | `/api/config` | GET | 无 | 配网信息，返回 `{"server":"host:port","token":"..."}` |
 | `/api/devices` | GET | 无 | 设备列表，返回 `[{deviceId, online, lastSeenMs}]` |

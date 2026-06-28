@@ -87,6 +87,17 @@ async fn main() -> Result<()> {
         .workers(num_cpus()) // worker 数 = CPU 核数
         .run();
 
+    // 启动离线检测后台任务：每 5 秒扫描一次，超时未心跳的设备标记为离线
+    let sweep_registry = state.registry.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            sweep_registry.sweep_offline();
+        }
+    });
+
     log::info!("HTTP 服务已就绪：http://{http_addr}");
     server.await?;
     Ok(())

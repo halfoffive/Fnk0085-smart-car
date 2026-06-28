@@ -30,6 +30,9 @@ pub struct PhotoResult {
 /// 指令队列容量（覆盖旧指令策略）。
 const COMMAND_QUEUE_CAPACITY: usize = 16;
 
+/// 设备离线超时（毫秒）：超过此时间未收到任何心跳/帧/事件即标记为离线。
+pub const OFFLINE_TIMEOUT_MS: u64 = 30_000;
+
 /// 可覆盖的指令队列：满时丢弃最旧指令，保证新指令总能入队。
 pub struct CommandQueue {
     cap: usize,
@@ -63,7 +66,9 @@ impl CommandQueue {
     }
 
     /// 等待指令，超时返回 None。
+    /// 使用 deadline 控制总等待时间，避免通知丢失窗口导致额外等待。
     pub async fn recv_timeout(&self, dur: Duration) -> Option<bytes::Bytes> {
+        let deadline = Instant::now() + dur;
         loop {
             {
                 let mut buf = self.buf.lock().unwrap();
@@ -71,7 +76,11 @@ impl CommandQueue {
                     return Some(json);
                 }
             }
-            match tokio::time::timeout(dur, self.notify.notified()).await {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match tokio::time::timeout(remaining, self.notify.notified()).await {
                 Ok(_) => continue,
                 Err(_) => return None,
             }
@@ -138,6 +147,16 @@ impl DeviceEntry {
 
     pub fn last_seen(&self) -> u64 {
         self.last_seen_ms.load(Ordering::Relaxed)
+    }
+
+    /// 若设备超过 OFFLINE_TIMEOUT_MS 未刷新，则标记为离线并返回 true。
+    pub fn mark_offline_if_stale(&self, now_ms: u64) -> bool {
+        if now_ms.saturating_sub(self.last_seen()) > OFFLINE_TIMEOUT_MS {
+            self.online.store(false, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn set_addr(&self, addr: SocketAddr) {
@@ -309,6 +328,16 @@ impl DeviceRegistry {
             })
             .collect()
     }
+
+    /// 扫描所有设备，将超时的设备标记为离线。
+    pub fn sweep_offline(&self) {
+        let now = now_ms();
+        for entry in self.inner.iter() {
+            if entry.mark_offline_if_stale(now) {
+                log::debug!("设备 {} 已离线", entry.device_id);
+            }
+        }
+    }
 }
 
 /// 服务启动时刻（进程生命周期内只初始化一次）
@@ -437,5 +466,42 @@ mod tests {
             let res = q.recv_timeout(Duration::from_millis(50)).await;
             assert!(res.is_none());
         });
+    }
+
+    #[test]
+    fn command_queue_recv_timeout_wakes_on_push() {
+        let q = Arc::new(CommandQueue::new(2));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let q2 = q.clone();
+            let recv_fut =
+                tokio::spawn(async move { q2.recv_timeout(Duration::from_secs(10)).await });
+            // 确保 recv 已经注册 wait 后再 push，测试通知唤醒即时性
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            q.push(Bytes::from_static(b"wake"));
+            let start = std::time::Instant::now();
+            let res = recv_fut.await.unwrap();
+            assert_eq!(res.unwrap(), Bytes::from_static(b"wake"));
+            assert!(
+                start.elapsed() < Duration::from_millis(500),
+                "通知丢失窗口导致额外等待"
+            );
+        });
+    }
+
+    #[test]
+    fn mark_offline_if_stale_works() {
+        let entry = DeviceEntry::new("dev1".into(), 8, 4, 1024, 256);
+        entry.last_seen_ms.store(0, Ordering::Relaxed);
+        assert!(entry.mark_offline_if_stale(OFFLINE_TIMEOUT_MS + 1));
+        assert!(!entry.is_online());
+
+        let entry2 = DeviceEntry::new("dev2".into(), 8, 4, 1024, 256);
+        entry2.last_seen_ms.store(0, Ordering::Relaxed);
+        assert!(!entry2.mark_offline_if_stale(OFFLINE_TIMEOUT_MS - 1));
+        assert!(entry2.is_online());
     }
 }
