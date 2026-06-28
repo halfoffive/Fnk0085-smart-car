@@ -21,8 +21,8 @@
 - 修复前端 ConfigDialog 自动填充的 server 缺少 scheme 导致校验失败的问题：现在自动填充为 `http(s)://host:port`（默认端口补全 80/443），且 server 字段校验强制要求 `http://` 或 `https://` scheme
 - 增加固件 `handleControl` 串口日志，便于确认 WASD 指令到达
 - 修复固件视频任务在连续上传约 20 帧后触发 `CORRUPT HEAP: Bad head` 并断言 `multi_heap_free (head != NULL)` 的问题，同时改善视频帧率：`videoTask` 将 JPEG 复制到 PSRAM 后立即归还摄像头帧缓冲，避免网络 I/O 长时间占用 `camera_fb_t`；`httpsHandshakeFailed` 改用 `portMUX_TYPE` 自旋锁实现跨核原子读写
-- 修复固件 HTTPS 模式下视频帧率极低（0.3-1fps）与 WASD 命令延时高（最坏 ~30s）的问题：视频通道启用 TLS 会话复用（`setSession`）且成功路径不再每帧 `stop()` 客户端；`pollTask` 长轮询改用独立 `pollSecureClient`/`pollClient`，不再与 `loop()` 的 telemetry/event POST 共用 `httpsMutex`；`loop()` 中指令派发提前到遥测之前
-- 修复 HTTP + WiFi 环境下 WASD 命令延时仍有 ~0.5s 的问题：将 `sendTelemetry()` 从 `loop()` 提取到独立 `telemetryTask`（core 0，独立客户端 + TLS 会话复用），`loop()` 不再包含任何同步网络 I/O，命令延时降到 <10ms
+- 修复固件 HTTPS 模式下视频帧率极低（0.3-1fps）与 WASD 命令延时高（最坏 ~30s）的问题：视频通道成功路径不再每帧 `stop()` 客户端以复用 TLS 连接；`pollTask` 长轮询改用独立 `pollSecureClient`/`pollClient`，不再与 `loop()` 的 telemetry/event POST 共用 `httpsMutex`；`loop()` 中指令派发提前到遥测之前
+- 修复 HTTP + WiFi 环境下 WASD 命令延时仍有 ~0.5s 的问题：将 `sendTelemetry()` 从 `loop()` 提取到独立 `telemetryTask`（core 0，独立客户端），`loop()` 不再包含任何同步网络 I/O，命令延时降到 <10ms
 
 ### Changed
 - 固件 `logTlsAndHttpError` HTTPS 模式 TLS 失败措辞改善：从 `[TLS] <tag> lastErr=<n> <desc>` 改为 `[TLS] <tag> handshake failed: code=<n> <desc> (backend may be plain HTTP)`，明确指出可能 scheme 不匹配（而非误导的 `connection refused`）
