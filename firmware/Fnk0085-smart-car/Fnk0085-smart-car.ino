@@ -178,15 +178,24 @@ String backendHost;        // 后端 host（控制 + 视频共用，scheme 由 u
 uint16_t backendPort = BACKEND_HTTPS_PORT;  // 后端端口（默认 8080；http/https 共用）
 
 // 网络：控制通道（pollTask/loop）与视频帧上传（videoTask）使用独立 HTTP 客户端
-// - 控制通道：httpsClient / plainClient + httpsMutex 互斥保护（pollTask / loop 两方）
+// - 控制通道 POST（loop telemetry/event/ack）：httpsClient / plainClient + httpsMutex
+// - pollTask 长轮询 GET：pollSecureClient / pollClient 独立客户端，不持 httpsMutex
+//   避免 30s 长轮询阻塞 loop() 的 telemetry/event POST（WASD 指令响应）
 // - 视频帧上传：videoSecureClient / videoClient，videoTask 独占，无需互斥锁
 //   分离后 pollTask 的 30s 长轮询不再阻塞 videoTask 的 100ms 帧节奏
 // - useHttps=true（默认，兼容老配置）：走 WiFiClientSecure + setInsecure
 // - useHttps=false：走 WiFiClient（明文，直连后端 http://）
 WiFiClientSecure    httpsClient;        // 控制通道：https 模式客户端（setInsecure，跳过证书校验）
 WiFiClient           plainClient;        // 控制通道：http 模式客户端（明文，直连后端）
+// pollTask 长轮询专用客户端（独立于 httpsMutex，不阻塞 loop 的 telemetry/event POST）
+WiFiClientSecure    pollSecureClient;   // pollTask 长轮询：https 模式客户端（独立，不与 loop 竞争 httpsMutex）
+WiFiClient           pollClient;         // pollTask 长轮询：http 模式客户端（独立，不与 loop 竞争 httpsMutex）
+// pollTask TLS 会话复用
+WiFiClientSecure::session_t pollTlsSession;
 WiFiClientSecure    videoSecureClient;  // 视频帧上传：https 模式客户端（独立，不与 pollTask 竞争）
 WiFiClient           videoClient;        // 视频帧上传：http 模式客户端（独立，不与 pollTask 竞争）
+// TLS 会话复用（session resumption），使视频帧重连走 abbreviated handshake 而非 full handshake
+WiFiClientSecure::session_t videoTlsSession;
 bool                 useHttps = true;  // scheme 开关；由 parseConfigLine 解析 server 字段决定
 // TLS 握手失败标记（session 内 sticky）：
 // - 首次 httpsClient / videoSecureClient 失败（http.POST/GET 返回 -1）后置 true，后续请求直接走 plainClient / videoClient
@@ -653,20 +662,18 @@ int httpsPost(const String& path, const String& body, String& respOut) {
   return code;
 }
 
-// GET 指定 path（长轮询）；返回 HTTP 状态码，<0 为网络/协议错误
+/* httpsGet — pollTask 长轮询 GET /api/device/{id}/poll
+ * 使用 pollSecureClient / pollClient 独立客户端，不持 httpsMutex
+ * 避免 30s 长轮询阻塞 loop() 的 telemetry/event POST
+ * 返回 HTTP 状态码，<0 为网络/协议错误 */
 int httpsGet(const String& path, String& respOut) {
-  if (!httpsLockTake(POLL_HTTP_TIMEOUT_MS)) {
-    Serial.println("[HTTPS] GET lock timeout");
-    return -1;
-  }
   HTTPClient http;
   String url = buildUrl(path);
   bool useTls = useHttps && !isHandshakeFailed();
-  bool ok = useTls ? http.begin(httpsClient, url)
-                   : http.begin(plainClient, url);
+  bool ok = useTls ? http.begin(pollSecureClient, url)
+                   : http.begin(pollClient, url);
   if (!ok) {
     Serial.printf("[HTTPS] GET begin failed: %s\n", url.c_str());
-    httpsLockGive();
     return -1;
   }
   http.addHeader("Authorization", "Bearer " + deviceToken);
@@ -674,15 +681,14 @@ int httpsGet(const String& path, String& respOut) {
   http.setTimeout(POLL_HTTP_TIMEOUT_MS);
   int code = http.GET();
   if (code == -1 && useTls) {
-    // TLS 握手失败：打印诊断日志、置 sticky 标记、清理客户端、回退 plainClient 重试一次
+    // TLS 握手失败：打印诊断日志、置 sticky 标记、清理客户端、回退 pollClient 重试一次
     logTlsAndHttpError(http, code, "GET");
     setHandshakeFailed(true);
     http.end();
-    httpsClient.stop();  // 显式清理 TLS 失败状态，避免 mbedtls 上下文损坏
+    pollSecureClient.stop();  // 显式清理 TLS 失败状态，避免 mbedtls 上下文损坏
     HTTPClient http2;
-    if (!http2.begin(plainClient, url)) {
+    if (!http2.begin(pollClient, url)) {
       Serial.printf("[HTTPS] GET retry begin failed: %s\n", url.c_str());
-      httpsLockGive();
       return -1;
     }
     http2.addHeader("Authorization", "Bearer " + deviceToken);
@@ -691,7 +697,6 @@ int httpsGet(const String& path, String& respOut) {
     int retryCode = http2.GET();
     if (retryCode > 0) respOut = http2.getString();
     http2.end();
-    httpsLockGive();
     return retryCode;
   }
   if (code < 0) {
@@ -701,15 +706,15 @@ int httpsGet(const String& path, String& respOut) {
     respOut = http.getString();
   }
   http.end();
-  httpsLockGive();
   return code;
 }
 
-// POST 单帧 JPEG 到 /api/device/{id}/frame；返回 HTTP 状态码，<0 为网络错误
-// body 为原始 JPEG 二进制；header 携带 token + uptime（用于前端延时测量）
-// 单帧超时 2s（FRAME_POST_TIMEOUT_MS），保证 10fps 节奏不塌
-// 使用独立 videoSecureClient / videoClient，不与 pollTask 的长轮询竞争互斥锁
-// 注意：视频帧不 keep-alive，每帧结束后显式 stop 客户端，避免 TLS 握手失败后的状态复用导致堆损坏
+/* httpsPostFrame — 上传单帧 JPEG 到 /api/device/{id}/frame
+ * 使用 videoSecureClient (TLS) 或 videoClient (明文)，独立于控制通道
+ * TLS 会话复用：setup() 中 setSession(videoTlsSession) 使重连走 abbreviated handshake
+ * 成功路径：仅 http.end()，不 stop() 客户端，复用 TLS 连接
+ * 失败路径：stop() 清理连接状态，避免复用损坏的 mbedtls 上下文
+ * 返回 HTTP 状态码（200/204 成功，-1 失败） */
 int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   String url = buildUrl("/api/device/" + deviceId + "/frame");
   HTTPClient http;
@@ -755,11 +760,14 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
     logTlsAndHttpError(http, code, "FRAME", useTls ? &videoSecureClient : nullptr);
   }
   http.end();
-  // 显式停止客户端，避免 HTTPClient end() 后仍持有半开连接或失败状态
-  if (useTls) {
-    videoSecureClient.stop();
-  } else {
-    videoClient.stop();
+  // 失败路径：清理连接状态，避免复用损坏的 mbedtls 上下文
+  // 成功路径：保持 TLS 连接存活，下帧复用，setSession 保证重连时走 abbreviated handshake
+  if (code <= 0 || (code != 200 && code != 204)) {
+    if (useTls) {
+      videoSecureClient.stop();
+    } else {
+      videoClient.stop();
+    }
   }
   if (code != 200 && code != 204) {
     Serial.printf("[FRAME] POST failed code=%d len=%u, https=%d\n",
@@ -1370,8 +1378,15 @@ void setup() {
   httpsClient.setTimeout(POLL_HTTP_TIMEOUT_MS);
   Serial.println("[HTTPS] client ready (setInsecure mode)");
 
+  // pollTask 长轮询独立客户端（不持 httpsMutex，避免 30s 长轮询阻塞 loop 的 telemetry/event POST）
+  pollSecureClient.setInsecure();
+  pollSecureClient.setSession(pollTlsSession);
+  pollSecureClient.setTimeout(POLL_HTTP_TIMEOUT_MS);
+  Serial.println("[HTTPS] poll client ready (setInsecure mode)");
+
   // 视频帧上传独立客户端（与控制通道分离，消除互斥锁竞争）
   videoSecureClient.setInsecure();
+  videoSecureClient.setSession(videoTlsSession);  // 启用 TLS 会话复用，重连走 abbreviated handshake
   videoSecureClient.setTimeout(FRAME_POST_TIMEOUT_MS);
   Serial.println("[HTTPS] video client ready (setInsecure mode)");
 
@@ -1386,7 +1401,7 @@ void setup() {
     ESP.restart();
   }
 
-  // httpsClient 互斥锁（pollTask / videoTask / loop 三方并发访问保护）
+  // httpsClient 互斥锁（loop 的 httpsPost telemetry/event/ack；pollTask 已改用独立 poll 客户端，不持此锁）
   httpsMutex = xSemaphoreCreateMutex();
   if (httpsMutex == NULL) {
     Serial.println("[BOOT] httpsMutex create failed, rebooting in 5s");
@@ -1428,6 +1443,13 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
+
+  // 2.8 派发 HTTPS 长轮询拉到的指令（pollTask → cmdQueue → handlers）
+  // 放在最前：避免被 sendTelemetry() 的同步 HTTPS POST 阻塞，让 WASD 指令尽快响应
+  dispatchCommands();
+
+  // 2.10 运行时也支持 Web Serial 配网
+  pollSerialConfig();
 
   // 2.3 编码器 100ms 采样
   static uint32_t lastEncSample = 0;
@@ -1475,12 +1497,6 @@ void loop() {
     memset(&pidState, 0, sizeof(pidState));
     Serial.println("[MOTION] auto stop after durationMs");
   }
-
-  // 2.8 派发 HTTPS 长轮询拉到的指令（pollTask → cmdQueue → handlers）
-  dispatchCommands();
-
-  // 2.10 运行时也支持 Web Serial 配网
-  pollSerialConfig();
 
   // WiFi 断线重连
   if (WiFi.status() != WL_CONNECTED) {
