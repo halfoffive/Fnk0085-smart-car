@@ -144,7 +144,9 @@ bun run dev        # 开发模式
 
 ## CI/CD 自动构建
 
-GitHub Actions 自动构建后端二进制，覆盖 7 个目标平台（[workflow 文件](.github/workflows/build-backend.yml)）：
+GitHub Actions 自动构建后端二进制 + ESP32-S3 固件（[workflow 文件](.github/workflows/build-backend.yml)）：
+
+**后端**（7 个目标平台）：
 
 | 目标平台 | 架构 | 链接方式 |
 |---------|------|---------|
@@ -154,9 +156,13 @@ GitHub Actions 自动构建后端二进制，覆盖 7 个目标平台（[workflo
 | macOS | x86_64 | Intel |
 | macOS | aarch64 | Apple Silicon |
 
+**ESP32-S3 固件**：arduino-cli 编译 + esptool 合并为单个 .bin（bootloader + partitions + app），可直接烧录到 0x0。
+
 **触发条件**：push 到 `master`（版本=`latest`）、push tag `v*`（版本=tag 名）、`workflow_dispatch` 手动触发。
 
-**产物下载**：构建完成后从 GitHub Actions 的 Artifacts 区下载 `fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`，保留 30 天。
+**产物下载**：构建完成后从 GitHub Actions 的 Artifacts 区下载，保留 30 天：
+- 后端：`fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`
+- 固件：`fnk0085-smart-car-firmware-<version>.bin`（`esptool --chip esp32s3 write_flash 0x0 <bin>`）
 
 ## 开发板参考
 

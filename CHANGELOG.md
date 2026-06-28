@@ -104,7 +104,7 @@
 - 前端 ConfigDialog 服务器地址校验：支持 hostname / IPv4 / `[IPv6]` + `:port`，端口范围 1-65535，非法时阻止提交并提示
 - 后端：新增 `POST /api/auth/login` 端点校验前端访问密码；配置文件 `auth.frontend_password` 字段（默认 `admin1234`，部署前修改）
 - 前端：访问前端需密码验证，登录态存 sessionStorage（关 tab 重登）；新增 LoginView 组件与退出登录按钮
-- 新增 GitHub Actions 自动构建后端（`.github/workflows/build-backend.yml`）：覆盖 7 个目标平台（Linux gnu/musl × x86_64/aarch64、Windows x86_64、macOS x86_64/aarch64），构建产物打包后上传至 GitHub Actions artifacts；触发条件为 push master（版本=`latest`）、push tag `v*`（版本=tag 名）、手动触发
+- 新增 GitHub Actions 自动构建（`.github/workflows/build-backend.yml`）：后端覆盖 7 个目标平台（Linux gnu/musl × x86_64/aarch64、Windows x86_64、macOS x86_64/aarch64）+ ESP32-S3 固件单个 .bin（arduino-cli 编译 + esptool 合并 bootloader/partitions/app，可直接烧录到 0x0）；产物上传至 GitHub Actions artifacts；触发条件为 push master（版本=`latest`）、push tag `v*`（版本=tag 名）、手动触发
 
 ### Fixed
 - 修复 ESP32-S3 SD 卡挂载失败的问题：原 `SD_MMC.begin("/sdcard", true)` 未调用 `setPins`，ESP32-S3 SD_MMC 走默认引脚导致初始化失败；参考 Freenove 示例补全
