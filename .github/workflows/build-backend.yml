@@ -1,0 +1,157 @@
+name: Build Backend
+
+# 自动构建后端二进制：覆盖 Linux (gnu/musl × x86_64/aarch64)、Windows、macOS (Intel/ARM)
+# 构建产物上传至 S3，路径：s3://<bucket>/fnk0085-smart-car-backend/<version>/
+# 版本号：tag 推送用 tag 名（如 v0.3.1），其他用 latest
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: build-${{ matrix.target }}-${{ github.ref }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 — glibc（原生）
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            apt_packages: ''
+          # Linux x86_64 — musl 静态链接
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            apt_packages: 'musl-tools'
+          # Linux aarch64 — glibc（交叉编译）
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            apt_packages: 'gcc-aarch64-linux-gnu'
+          # Linux aarch64 — musl 静态链接（交叉编译）
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            apt_packages: ''
+            musl_cross: 'aarch64'
+          # Windows x86_64 — MSVC（原生）
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            apt_packages: ''
+          # macOS Intel — 从 Apple Silicon runner 交叉编译
+          - target: x86_64-apple-darwin
+            os: macos-14
+            apt_packages: ''
+          # macOS Apple Silicon — 原生
+          - target: aarch64-apple-darwin
+            os: macos-14
+            apt_packages: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      # 预构建前端：build.rs 会通过 mtime 检测跳过重复构建
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          bun install
+          bun run build
+
+      # Linux 交叉编译工具链安装
+      - name: Install apt cross-compilation packages
+        if: runner.os == 'Linux' && matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
+
+      # aarch64 musl 交叉编译器（Ubuntu 无标准 apt 包，从 musl.cc 获取）
+      - name: Install aarch64 musl cross-compiler
+        if: matrix.musl_cross == 'aarch64'
+        run: |
+          wget -q https://musl.cc/aarch64-linux-musl-cross.tgz
+          tar xzf aarch64-linux-musl-cross.tgz
+          echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+
+      # 按目标设置交叉编译链接器
+      - name: Configure cross-compilation linkers
+        if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> $GITHUB_ENV
+              ;;
+            aarch64-unknown-linux-gnu)
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+              ;;
+            aarch64-unknown-linux-musl)
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          key: ${{ matrix.target }}
+
+      - name: Build backend
+        working-directory: backend
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # 版本号：tag 推送用 tag 名，其他用 latest；同时确定产物扩展名
+      - name: Extract version and archive extension
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            echo "ext=zip" >> "$GITHUB_OUTPUT"
+          else
+            echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package binary
+        shell: bash
+        run: |
+          ARCHIVE="fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}"
+          cd backend/target/${{ matrix.target }}/release
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            7z a "$GITHUB_WORKSPACE/${ARCHIVE}.zip" fnk0085-smart-car-backend.exe
+          else
+            tar czf "$GITHUB_WORKSPACE/${ARCHIVE}.tar.gz" fnk0085-smart-car-backend
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload to S3
+        shell: bash
+        run: |
+          aws s3 cp \
+            "fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ steps.meta.outputs.ext }}" \
+            "s3://${{ secrets.S3_BUCKET }}/fnk0085-smart-car-backend/${{ steps.meta.outputs.version }}/" \
+            --no-progress

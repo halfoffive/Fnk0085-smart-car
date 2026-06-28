@@ -142,6 +142,31 @@ bun run dev        # 开发模式
 - **后端**：Rust stable、actix-http 3.13.1（`http2` + `compress-gzip` feature，明文 h2c）、DashMap、tokio broadcast、include_dir、build.rs 自动构建前端
 - **前端**：Vite 8.1.0、Vue 3.5.9、TailwindCSS 4.3.1、Web Worker、Web Serial API、vite-plugin-pwa（injectManifest）、bun
 
+## CI/CD 自动构建
+
+GitHub Actions 自动构建后端二进制，覆盖 7 个目标平台（[workflow 文件](.github/workflows/build-backend.yml)）：
+
+| 目标平台 | 架构 | 链接方式 |
+|---------|------|---------|
+| Linux | x86_64 | glibc / musl 静态 |
+| Linux | aarch64 | glibc / musl 静态 |
+| Windows | x86_64 | MSVC |
+| macOS | x86_64 | Intel |
+| macOS | aarch64 | Apple Silicon |
+
+**触发条件**：push 到 `master`（版本=`latest`）、push tag `v*`（版本=tag 名）、`workflow_dispatch` 手动触发。
+
+**S3 路径**：`s3://<bucket>/fnk0085-smart-car-backend/<version>/fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`
+
+**所需 GitHub Secrets**：
+
+| Secret | 说明 |
+|--------|------|
+| `AWS_ACCESS_KEY_ID` | AWS 访问密钥 |
+| `AWS_SECRET_ACCESS_KEY` | AWS 秘密密钥 |
+| `AWS_REGION` | S3 桶区域 |
+| `S3_BUCKET` | S3 桶名 |
+
 ## 开发板参考
 
 [Freenove ESP32-S3 WROOM](https://docs.freenove.com/en/latest/index.html)（含摄像头 + IO 扩展）
@@ -150,6 +175,8 @@ bun run dev        # 开发模式
 
 ```
 Fnk0085-smart-car/
+├── .github/
+│   └── workflows/ # CI/CD — 后端多平台自动构建 + S3 上传
 ├── firmware/      # ESP32-S3 .ino
 ├── backend/       # Rust actix-http
 ├── frontend/      # Vite PWA
