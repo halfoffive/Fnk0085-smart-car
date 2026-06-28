@@ -79,11 +79,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt_packages }}
 
-      # aarch64 musl 交叉编译器（musl.cc 不稳定，改用 GitHub musl-cross-make releases）
+      # aarch64 musl 交叉编译器（musl.cc 预编译工具链）
       - name: Install aarch64 musl cross-compiler
         if: matrix.musl_cross == 'aarch64'
         run: |
-          wget -q https://github.com/musl-cross/musl-cross-make/releases/download/v0.9.10/aarch64-linux-musl-cross.tgz
+          wget -q https://musl.cc/aarch64-linux-musl-cross.tgz
           tar xzf aarch64-linux-musl-cross.tgz
           echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
 
@@ -196,7 +196,7 @@ jobs:
           pip3 install esptool
           BUILD_DIR="$GITHUB_WORKSPACE/firmware-out"
           BOOTLOADER="$BUILD_DIR/Fnk0085-smart-car.ino.bootloader.bin"
-          PARTITIONS="$BUILD_DIR/Fnk0085-smart-car.ino.partitions.csv"
+          PARTITIONS="$BUILD_DIR/Fnk0085-smart-car.ino.partitions.bin"
           APP_BIN="$BUILD_DIR/Fnk0085-smart-car.ino.bin"
           # 校验编译产物存在
           for f in "$BOOTLOADER" "$PARTITIONS" "$APP_BIN"; do
