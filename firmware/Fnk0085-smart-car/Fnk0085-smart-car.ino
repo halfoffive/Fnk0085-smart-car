@@ -69,10 +69,12 @@ const int PIN_IN4 = 21;
 const int PIN_ENA = 1;   // 左电机 PWM
 const int PIN_ENB = 2;   // 右电机 PWM
 
-// LEDC PWM 配置（core 3.x 由 ledcAttach 自动分配 channel，无需手动指定）
+// LEDC PWM 配置（core 3.x 使用 ledcAttachChannel 固定通道，避免与摄像头 XCLK 通道 0 冲突）
 const uint32_t LEDC_FREQ_HZ   = 1000;   // 1 kHz
 const uint8_t  LEDC_RES_BITS  = 8;      // 8 位分辨率
 const uint16_t PWM_MAX         = 255;   // 8 位 PWM 上限
+const uint8_t  MOTOR_L_CHANNEL = 2;     // 左轮 PWM 占用 LEDC 通道 2
+const uint8_t  MOTOR_R_CHANNEL = 3;     // 右轮 PWM 占用 LEDC 通道 3
 
 // 编码器引脚（LEFT_ENC=GPIO14，RIGHT_ENC=GPIO3 strapping pin，boot 后 INPUT_PULLUP 安全）
 const int      PIN_ENC_LEFT   = 14;
@@ -87,6 +89,7 @@ const float    PID_KD               = 0.1f;
 const int      PID_CONVERGE_N       = 5;     // 连续 5 次稳定则写入缓存
 const uint32_t PID_RPM_THRESHOLD    = 5;     // |左-右| < 5 RPM 视为收敛
 const int      MAX_TARGET_RPM       = 100;   // PWM=255 对应目标 RPM（经验值）
+const float    PID_INTEGRAL_MAX     = 100.0f; // 积分限幅，防止堵转/悬空时积分饱和
 
 // 视频
 const uint32_t VIDEO_FRAME_INTERVAL_MS = 100; // 100ms/帧 → 10fps
@@ -101,6 +104,7 @@ const uint16_t POLL_TASK_STACK   = 16384; // pollTask 栈字节
 const uint16_t VIDEO_TASK_STACK  = 16384; // videoTask 栈字节（HTTPClient + TLS 握手栈占用大）
 const uint16_t TELEMETRY_TASK_STACK = 16384; // telemetryTask 栈字节（独立客户端上报遥测）
 const uint16_t POLL_HTTP_TIMEOUT_MS = 35000; // HTTP 整体超时（略大于 poll 超时）
+const uint16_t EVENT_POST_TIMEOUT_MS = 3000; // loop 内事件 POST 超时（ack/photo_done/error），避免阻塞控制
 const uint16_t POLL_BACKOFF_MS   = 1000; // poll 失败后重试间隔
 
 // SNTP 同步参数
@@ -137,6 +141,8 @@ struct PidState {
   float rightIntegral;
   float prevLeftError;
   float prevRightError;
+  int   prevLeftOutput;   // 上周期左轮输出，用于输出饱和时停止积分
+  int   prevRightOutput;  // 上周期右轮输出，用于输出饱和时停止积分
   int   convergeCount;
 };
 
@@ -170,7 +176,7 @@ bool pwmCacheEnabled = true;   // 全局开关，可被 pwm_cache 指令切换
 String    targetDirection = "stop";
 int       targetPwm       = 0;
 uint32_t  motionStopAt    = 0;     // 0 表示不自动停止
-PidState  pidState        = { 0.0f, 0.0f, 0.0f, 0.0f, 0 };
+PidState  pidState        = { 0.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0 };
 
 // 设备身份
 String deviceId;
@@ -235,7 +241,7 @@ void setPwmCacheEnabled(bool enabled);
 String generateDeviceId();
 
 // HTTPS 控制通道
-int  httpsPost(const String& path, const String& body, String& respOut);
+int  httpsPost(const String& path, const String& body, String& respOut, uint32_t timeoutMs = POLL_HTTP_TIMEOUT_MS);
 int  httpsGet(const String& path, String& respOut);
 int  httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs);
 int  probeHealth(bool useTls);
@@ -322,9 +328,9 @@ void motorInit() {
   pinMode(PIN_IN2, OUTPUT);
   pinMode(PIN_IN3, OUTPUT);
   pinMode(PIN_IN4, OUTPUT);
-  // Arduino-ESP32 core 3.x：ledcAttach 一步完成 channel 分配 + 引脚绑定 + 频率/分辨率设置
-  ledcAttach(PIN_ENA, LEDC_FREQ_HZ, LEDC_RES_BITS);
-  ledcAttach(PIN_ENB, LEDC_FREQ_HZ, LEDC_RES_BITS);
+  // Arduino-ESP32 core 3.x：ledcAttachChannel 固定通道，避免与摄像头 XCLK 通道 0 冲突
+  ledcAttachChannel(PIN_ENA, LEDC_FREQ_HZ, LEDC_RES_BITS, MOTOR_L_CHANNEL);
+  ledcAttachChannel(PIN_ENB, LEDC_FREQ_HZ, LEDC_RES_BITS, MOTOR_R_CHANNEL);
   setMotor(0, 0);
 }
 
@@ -418,16 +424,24 @@ MotorPWM computePid(int targetSpeed, uint32_t leftRpm, uint32_t rightRpm,
   float leftP  = PID_KP * leftError;
   float rightP = PID_KP * rightError;
 
-  float leftI  = prev.leftIntegral  + PID_KI * leftError;
-  float rightI = prev.rightIntegral + PID_KI * rightError;
-
   float leftD  = PID_KD * (leftError  - prev.prevLeftError);
   float rightD = PID_KD * (rightError - prev.prevRightError);
+
+  // 积分抗饱和：上周期输出已饱和且误差同号时跳过本次积分累加
+  bool leftSat  = (abs(prev.prevLeftOutput)  >= PWM_MAX) && (leftError  * prev.prevLeftOutput  > 0);
+  bool rightSat = (abs(prev.prevRightOutput) >= PWM_MAX) && (rightError * prev.prevRightOutput > 0);
+
+  float leftI  = prev.leftIntegral  + (leftSat  ? 0.0f : PID_KI * leftError);
+  float rightI = prev.rightIntegral + (rightSat ? 0.0f : PID_KI * rightError);
+
+  // 积分限幅
+  leftI  = constrain(leftI,  -PID_INTEGRAL_MAX, PID_INTEGRAL_MAX);
+  rightI = constrain(rightI, -PID_INTEGRAL_MAX, PID_INTEGRAL_MAX);
 
   int leftPwm  = (int)(leftP  + leftI  + leftD);
   int rightPwm = (int)(rightP + rightI + rightD);
 
-  // 限幅
+  // 输出限幅
   if (leftPwm  >  PWM_MAX) leftPwm  =  PWM_MAX;
   if (leftPwm  < -PWM_MAX) leftPwm  = -PWM_MAX;
   if (rightPwm >  PWM_MAX) rightPwm =  PWM_MAX;
@@ -440,6 +454,8 @@ MotorPWM computePid(int targetSpeed, uint32_t leftRpm, uint32_t rightRpm,
   next.rightIntegral   = rightI;
   next.prevLeftError   = leftError;
   next.prevRightError  = rightError;
+  next.prevLeftOutput  = leftPwm;
+  next.prevRightOutput = rightPwm;
 
   // 收敛判定：|leftRpm - rightRpm| < threshold 计数 +1
   int diff = (int)leftRpm - (int)rightRpm;
@@ -635,8 +651,8 @@ bool probeScheme() {
 // POST JSON 到指定 path；返回 HTTP 状态码（>=200），<0 为网络/协议错误
 // 调用前后持 httpsMutex 互斥保护客户端（pollTask / videoTask / loop 三方并发）
 // 根据 useHttps 选择 httpsClient（TLS）或 plainClient（明文）
-int httpsPost(const String& path, const String& body, String& respOut) {
-  if (!httpsLockTake(POLL_HTTP_TIMEOUT_MS)) {
+int httpsPost(const String& path, const String& body, String& respOut, uint32_t timeoutMs) {
+  if (!httpsLockTake(timeoutMs)) {
     Serial.println("[HTTPS] POST lock timeout");
     return -1;
   }
@@ -652,7 +668,7 @@ int httpsPost(const String& path, const String& body, String& respOut) {
   }
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + deviceToken);
-  http.setTimeout(POLL_HTTP_TIMEOUT_MS);
+  http.setTimeout(timeoutMs);
   int code = http.POST(body);
   if (code == -1 && useTls) {
     // TLS 握手失败（如对端为明文 HTTP 端口）：打印诊断日志、置 sticky 标记、清理客户端、回退 plainClient 重试一次
@@ -668,7 +684,7 @@ int httpsPost(const String& path, const String& body, String& respOut) {
     }
     http2.addHeader("Content-Type", "application/json");
     http2.addHeader("Authorization", "Bearer " + deviceToken);
-    http2.setTimeout(POLL_HTTP_TIMEOUT_MS);
+    http2.setTimeout(timeoutMs);
     int retryCode = http2.POST(body);
     if (retryCode > 0) respOut = http2.getString();
     http2.end();
@@ -702,6 +718,7 @@ int httpsGet(const String& path, String& respOut) {
   }
   http.addHeader("Authorization", "Bearer " + deviceToken);
   http.addHeader("Cache-Control", "no-store");
+  http.addHeader("Connection", "close");
   http.setTimeout(POLL_HTTP_TIMEOUT_MS);
   int code = http.GET();
   if (code == -1 && useTls) {
@@ -717,6 +734,7 @@ int httpsGet(const String& path, String& respOut) {
     }
     http2.addHeader("Authorization", "Bearer " + deviceToken);
     http2.addHeader("Cache-Control", "no-store");
+    http2.addHeader("Connection", "close");
     http2.setTimeout(POLL_HTTP_TIMEOUT_MS);
     int retryCode = http2.GET();
     if (retryCode > 0) respOut = http2.getString();
@@ -735,7 +753,7 @@ int httpsGet(const String& path, String& respOut) {
 
 /* httpsPostFrame — 上传单帧 JPEG 到 /api/device/{id}/frame
  * 使用 videoSecureClient (TLS) 或 videoClient (明文)，独立于控制通道
- * 成功路径：仅 http.end()，不 stop() 客户端，复用 TLS 连接
+ * 每帧使用独立连接（Connection: close），避免 keep-alive 复用已关闭连接导致读超时
  * 失败路径：stop() 清理连接状态，避免复用损坏的 mbedtls 上下文
  * 返回 HTTP 状态码（200/204 成功，-1 失败） */
 int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
@@ -751,6 +769,7 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   http.addHeader("Authorization", "Bearer " + deviceToken);
   http.addHeader("Content-Type", "image/jpeg");
   http.addHeader("X-Device-Uptime-Ms", String((unsigned long long)uptimeMs));
+  http.addHeader("Connection", "close");
   http.setTimeout(FRAME_POST_TIMEOUT_MS);
   int code = http.POST(jpeg, len);
   if (code == -1 && useTls) {
@@ -767,11 +786,13 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
     http2.addHeader("Authorization", "Bearer " + deviceToken);
     http2.addHeader("Content-Type", "image/jpeg");
     http2.addHeader("X-Device-Uptime-Ms", String((unsigned long long)uptimeMs));
+    http2.addHeader("Connection", "close");
     http2.setTimeout(FRAME_POST_TIMEOUT_MS);
     int retryCode = http2.POST(jpeg, len);
     http2.end();
-    videoClient.stop();  // 每帧结束关闭连接，不保持长连接
+    // TLS 回退成功时保持连接复用，减少下帧重连延迟；失败时关闭连接清理状态
     if (retryCode != 200 && retryCode != 204) {
+      videoClient.stop();
       Serial.printf("[FRAME] POST failed code=%d len=%u, https=%d\n",
                     retryCode, (unsigned)len,
                     (useHttps && !isHandshakeFailed()) ? 1 : 0);
@@ -784,7 +805,7 @@ int httpsPostFrame(uint8_t* jpeg, size_t len, uint64_t uptimeMs) {
   }
   http.end();
   // 失败路径：清理连接状态，避免复用损坏的 mbedtls 上下文
-  // 成功路径：保持 TLS 连接存活，下帧复用；重连走 full handshake（core 3.x 不支持 session resumption）
+  // 成功路径：已使用 Connection: close，由服务器/HTTPClient 正常关闭连接
   if (code <= 0 || (code != 200 && code != 204)) {
     if (useTls) {
       videoSecureClient.stop();
@@ -826,7 +847,7 @@ void sendPhotoDone(const String& path, uint32_t uptimeMs) {
   serializeJson(doc, body);
   String url = "/api/device/" + deviceId + "/event";
   String resp;
-  int code = httpsPost(url, body, resp);
+  int code = httpsPost(url, body, resp, EVENT_POST_TIMEOUT_MS);
   if (code != 200) {
     Serial.printf("[NET] photo_done failed code=%d\n", code);
   }
@@ -841,7 +862,7 @@ void sendAck(int refSeq) {
   serializeJson(doc, body);
   String url = "/api/device/" + deviceId + "/event";
   String resp;
-  int code = httpsPost(url, body, resp);
+  int code = httpsPost(url, body, resp, EVENT_POST_TIMEOUT_MS);
   if (code != 200) {
     Serial.printf("[NET] ack failed code=%d\n", code);
   }
@@ -857,7 +878,7 @@ void sendError(int code, const String& msg) {
   serializeJson(doc, body);
   String url = "/api/device/" + deviceId + "/event";
   String resp;
-  int httpCode = httpsPost(url, body, resp);
+  int httpCode = httpsPost(url, body, resp, EVENT_POST_TIMEOUT_MS);
   if (httpCode != 200) {
     Serial.printf("[NET] error report failed code=%d\n", httpCode);
   }
@@ -916,6 +937,7 @@ void telemetryTask(void* arg) {
     http.setTimeout(2000);
     http.addHeader("Authorization", "Bearer " + deviceToken);
     http.addHeader("Content-Type", "application/json");
+    http.addHeader("Connection", "close");
     int code = http.POST(body);
     if (code == -1 && useTls) {
       // TLS 握手失败：打印诊断日志、置 sticky 标记、清理失败客户端、回退明文重试一次
@@ -931,6 +953,7 @@ void telemetryTask(void* arg) {
       http2.setTimeout(2000);
       http2.addHeader("Authorization", "Bearer " + deviceToken);
       http2.addHeader("Content-Type", "application/json");
+      http2.addHeader("Connection", "close");
       int retryCode = http2.POST(body);
       http2.end();
       if (retryCode != 200) {
