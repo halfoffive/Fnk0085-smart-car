@@ -43,9 +43,10 @@ pub async fn handle_frame(
         Err(e) => return bad_request(&format!("读取请求体失败: {e}"), accept_gzip),
     };
     // 视为心跳：10fps 帧上传会持续刷新 last_seen，使设备保持 online
-    entry.touch(None, now_ms());
+    let recv_ms = now_ms();
+    entry.touch(None, recv_ms);
     entry.video.push(Frame {
-        server_recv_ms: now_ms(),
+        server_recv_ms: recv_ms,
         jpeg: body,
     });
     // 204 No Content：设备仅关心状态码，不需要 body
