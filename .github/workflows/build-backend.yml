@@ -79,11 +79,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt_packages }}
 
-      # aarch64 musl 交叉编译器（Ubuntu 无标准 apt 包，从 musl.cc 获取）
+      # aarch64 musl 交叉编译器（musl.cc 不稳定，改用 GitHub musl-cross-make releases）
       - name: Install aarch64 musl cross-compiler
         if: matrix.musl_cross == 'aarch64'
         run: |
-          wget -q https://musl.cc/aarch64-linux-musl-cross.tgz
+          wget -q https://github.com/musl-cross/musl-cross-make/releases/download/v0.9.10/aarch64-linux-musl-cross.tgz
           tar xzf aarch64-linux-musl-cross.tgz
           echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
 
@@ -195,12 +195,22 @@ jobs:
         run: |
           pip3 install esptool
           BUILD_DIR="$GITHUB_WORKSPACE/firmware-out"
-          BOOTLOADER=$(find ~/.arduino15 -name "bootloader.bin" -path "*esp32s3*" | head -1)
-          PARTITIONS=$(find ~/.arduino15 -name "default_partitions.csv" -path "*esp32*" | head -1)
+          BOOTLOADER="$BUILD_DIR/Fnk0085-smart-car.ino.bootloader.bin"
+          PARTITIONS="$BUILD_DIR/Fnk0085-smart-car.ino.partitions.csv"
+          APP_BIN="$BUILD_DIR/Fnk0085-smart-car.ino.bin"
+          # 校验编译产物存在
+          for f in "$BOOTLOADER" "$PARTITIONS" "$APP_BIN"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: 缺失文件 $f"
+              echo "BUILD_DIR 内容："
+              ls -la "$BUILD_DIR/"
+              exit 1
+            fi
+          done
           esptool --chip esp32s3 merge-bin -o "$BUILD_DIR/fnk0085-smart-car-firmware-${{ steps.meta.outputs.version }}.bin" \
             0x0  "$BOOTLOADER" \
             0x8000 "$PARTITIONS" \
-            0x10000 "$BUILD_DIR/Fnk0085-smart-car.ino.bin"
+            0x10000 "$APP_BIN"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
