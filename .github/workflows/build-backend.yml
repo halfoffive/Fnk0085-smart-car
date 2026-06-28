@@ -1,7 +1,7 @@
-name: Build Backend
+name: Build
 
-# 自动构建后端二进制：覆盖 Linux (gnu/musl × x86_64/aarch64)、Windows、macOS (Intel/ARM)
-# 构建产物上传至 S3，路径：s3://<bucket>/fnk0085-smart-car-backend/<version>/
+# 自动构建：后端二进制（7 平台交叉编译）+ ESP32-S3 固件单个 .bin
+# 构建产物上传至 GitHub Actions artifacts
 # 版本号：tag 推送用 tag 名（如 v0.3.1），其他用 latest
 
 on:
@@ -141,17 +141,70 @@ jobs:
             tar czf "$GITHUB_WORKSPACE/${ARCHIVE}.tar.gz" fnk0085-smart-car-backend
           fi
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      # 上传构建产物至 GitHub Actions artifacts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          name: fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}
+          path: fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ steps.meta.outputs.ext }}
+          retention-days: 30
 
-      - name: Upload to S3
+  # ESP32-S3 固件构建：arduino-cli 编译为单个 .bin（烧录到 0x0）
+  build-firmware:
+    name: Build ESP32-S3 Firmware
+    runs-on: ubuntu-latest
+    concurrency:
+      group: build-firmware-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 board core
+        run: |
+          arduino-cli config init --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install ArduinoJson library
+        run: arduino-cli lib install ArduinoJson
+
+      - name: Extract version
+        id: meta
         shell: bash
         run: |
-          aws s3 cp \
-            "fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ steps.meta.outputs.ext }}" \
-            "s3://${{ secrets.S3_BUCKET }}/fnk0085-smart-car-backend/${{ steps.meta.outputs.version }}/" \
-            --no-progress
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compile firmware
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashMode=qio,PartitionScheme=default \
+            --build-property "build.partitions=default" \
+            --output-dir "$GITHUB_WORKSPACE/firmware-out" \
+            firmware/Fnk0085-smart-car/Fnk0085-smart-car.ino
+
+      # esptool merge 生成单个 .bin（bootloader + partitions + app 合并，可直接烧录到 0x0）
+      - name: Merge into single .bin
+        run: |
+          pip3 install esptool
+          BUILD_DIR="$GITHUB_WORKSPACE/firmware-out"
+          BOOTLOADER=$(find ~/.arduino15 -name "bootloader.bin" -path "*esp32s3*" | head -1)
+          PARTITIONS=$(find ~/.arduino15 -name "default_partitions.csv" -path "*esp32*" | head -1)
+          esptool --chip esp32s3 merge-bin -o "$BUILD_DIR/fnk0085-smart-car-firmware-${{ steps.meta.outputs.version }}.bin" \
+            0x0  "$BOOTLOADER" \
+            0x8000 "$PARTITIONS" \
+            0x10000 "$BUILD_DIR/Fnk0085-smart-car.ino.bin"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnk0085-smart-car-firmware-${{ steps.meta.outputs.version }}
+          path: firmware-out/fnk0085-smart-car-firmware-${{ steps.meta.outputs.version }}.bin
+          retention-days: 30
