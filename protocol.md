@@ -74,7 +74,7 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 
 - `direction`: `"W"`（前进） \| `"A"`（左转） \| `"S"`（后退） \| `"D"`（右转） \| `"stop"`（停止）
 - `pwm`: `0..255`
-- `durationMs`: 可选，执行时长（毫秒），超时自动停止
+- `durationMs`: 可选，执行时长（毫秒）。大于 0 时固件在 `loop()` 中到达 `motionStopAt` 后自动发送 `stop` 等效指令；后端不单独回执，控制是否生效由设备侧 `ack` 或遥测反映
 
 #### 2.2.2 type=photo
 
@@ -98,7 +98,7 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 }
 ```
 
-- `enabled`: bool，是否启用 PWM 缓存
+- `enabled`: bool，是否启用 PWM 缓存。收到后立即生效；固件侧维护“方向 → PWM”映射表，启用后前端/后端下发的 `control` 指令可省略 `pwm` 字段，设备使用最近一次同方向的缓存值。切换后无需 ACK，状态由后续 `telemetry` 或 `GET /api/devices` 透传
 
 #### 2.2.4 type=ping
 
@@ -185,6 +185,8 @@ JSON 格式（UTF-8），tag=`type`，字段 camelCase。
 ]
 ```
 
+- `online`：后端每 5s 扫描一次，若设备超过 30s 未通过 `register`/`poll`/`event`/`frame` 刷新 `lastSeenMs`，则标记为 `false`。
+
 ### 3.2 POST /api/control/{deviceId}
 
 请求体：
@@ -235,6 +237,7 @@ X-Latency-Ms: <int>\r\n
 
 - `X-Latency-Ms`：本帧端到端延迟（ms），由后端计算 `now - deviceUptimeMs` 后透传至前端
 - 浏览器通过 `fetch` + `ReadableStream` 或 `<img>` 自动刷新消费
+- 前端应监听连接中断并自动重连；断流期间后端 `VideoCache` 继续接收设备新帧，重连后从最新帧继续推送
 
 ### 3.6 GET /api/pwm_cache/{deviceId}
 
@@ -266,8 +269,10 @@ X-Latency-Ms: <int>\r\n
 响应（200 OK，`Content-Type: application/json`）：
 
 ```json
-{"status": "ok", "version": "0.3.1"}
+{"status": "ok", "version": "0.3.2"}
 ```
+
+> `version` 值由后端 `Cargo.toml` 的 `package.version` 通过 `env!("CARGO_PKG_VERSION")` 自动注入，协议文档示例仅作参考。
 
 固件 `probeScheme()` 在 WiFi 关联 + SNTP 同步后、首次 register 之前调用本端点：先试 NVS 配的 scheme（`http://` 或 `https://`），失败再试另一 scheme，成功则切换 `useHttps` 并写回 NVS（auto-correct）。
 
