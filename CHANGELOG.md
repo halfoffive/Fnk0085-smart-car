@@ -1,10 +1,23 @@
 # Changelog
 
-本项目版本号统一：固件 / 后端 / 前端共享 `0.3.1`。前端 PWA 缓存键带版本号，版本变更时自动清理旧缓存。
+本项目版本号统一：固件 / 后端 / 前端共享 `Cargo.toml` 的 `version`。前端 PWA 缓存键带版本号，版本变更时自动清理旧缓存。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [0.3.1-audit-fix] - 2026-06-28
+## [0.3.3] - 2026-06-28
+
+### Fixed
+
+- **固件启动后约 1 秒（10 帧）卡死的 P0 问题**：根因是上一轮修复中引入的 `Connection: close` 头导致每帧/每次请求都关闭 TCP 连接，而失败路径未完全 `client.stop()` 清理，在 HTTP 明文模式下约 10 帧后触发 ESP32 lwIP/WiFi 协议栈状态损坏死锁；同时 `videoTask` 被 pinned 到 core 1，从 core 1 跨核调用 WiFi API 在并发场景下存在死锁风险。修复措施：
+  - 移除所有 `Connection: close` 头，恢复 HTTP keep-alive 长连接复用，降低每帧重连开销
+  - 补全 HTTP 明文模式下所有失败路径的 `client.stop()` 清理（`httpsPost`/`httpsGet`/`telemetryTask`/`resetNetworkClients` 共遗漏 4 处），确保失败时彻底关闭连接避免状态泄露
+  - 将 `videoTask` 从 core 1 移到 core 0，与 `pollTask`/`telemetryTask`/WiFi 协议栈同核，消除跨核 WiFi API 调用的死锁隐患
+  - `POLL_TASK_STACK`/`VIDEO_TASK_STACK`/`TELEMETRY_TASK_STACK` 统一从 16384 提升到 20480 字节，增加栈冗余防止 HTTPClient + keep-alive 长连接场景下栈溢出
+  - `videoTask` 每 10 帧汇总日志增加栈高水位、空闲堆、空闲 PSRAM 打印；`esp_camera_fb_get()` 返回 NULL 时增加诊断日志
+  - `setup()` 客户端初始化日志标签修正：HTTP 模式打印 `[HTTP]`，HTTPS 模式打印 `[HTTPS]`，避免误导
+  - 指令队列 `CMD_QUEUE_LEN` 从 8 扩容到 16，配合后端 `CommandQueue` 可覆盖策略进一步减少指令丢弃
+
+## [0.3.2] - 2026-06-28
 
 本次为综合审查后的安全与稳定性修复批次，不升级三端 `package.json` / `Cargo.toml` 版本号，PWA 缓存键保持 `0.3.1`。
 

@@ -104,6 +104,8 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - **后端视频缓存有内存上限**：每设备 `VideoCache` 配置总字节上限与单帧大小上限，`push` 时按 LRU 丢弃旧帧，防止高分辨率/高码率场景下后端 OOM。
 - **后端登录使用恒定时间比较**：`auth.rs` 使用 `subtle::ConstantTimeEq` 比较密码，登录耗时不会泄露密码前缀信息。
 - **前端 Worker 正常处理取消**：切换设备或主动停止视频流产生的 `AbortError` 被 `videoWorker.ts` 识别为正常停止，不会 post error 导致界面报红。
+- **固件启动后打印 `[VIDEO] frames ok=10 fail=0` 后卡死无反应**：根因有二。① 历史版本中曾添加 `Connection: close` 头，导致每帧/每次 HTTP 请求都关闭 TCP 连接，但失败路径遗漏了 `client.stop()` 清理，在 HTTP 明文模式下约 10 帧后 ESP32 lwIP/WiFi 协议栈连接状态损坏触发死锁。② `videoTask` 被 pinned 到 core 1，从 core 1 跨核调用 WiFi API 在并发 keep-alive 场景下存在死锁风险。已修复（v0.3.3）：移除所有 `Connection: close` 头恢复 keep-alive 复用；补全全部失败路径的 `client.stop()`（含 `httpsPost`/`httpsGet`/`telemetryTask`/`resetNetworkClients` 的 `plainClient`/`pollClient`/`telemetryClient`）；`videoTask` 移到 core 0 与 WiFi 协议栈同核；三个网络任务栈统一提升到 20480 字节；`resetNetworkClients()` 补全 `plainClient.stop()`。
+- **所有 FreeRTOS 网络任务必须 pinned 到 core 0**：`videoTask`/`pollTask`/`telemetryTask` 均使用 WiFiClient/HTTPClient 进行网络操作，ESP32 WiFi 协议栈运行在 core 0，跨核调用 WiFi API 在并发 keep-alive 场景下可能死锁。新增任务如需网络 I/O 一律 pinned 到 core 0。
 
 ## 协议改动清单
 

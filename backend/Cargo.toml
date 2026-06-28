@@ -1,6 +1,6 @@
 [package]
 name = "fnk0085-smart-car-backend"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "Fnk0085 智能小车后端：基于 actix-http v3.13.1 的低内存多设备转发服务"
 license = "MIT"
