@@ -36,8 +36,8 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 `.github/workflows/build-backend.yml` — GitHub Actions 自动构建后端二进制 + ESP32-S3 固件，产物上传至 GitHub Actions artifacts。
 
 - **触发**：push `master`（版本=`latest`）、push tag `v*`（版本=tag 名）、`workflow_dispatch` 手动触发
-- **后端构建**（7 平台 matrix）：原生 `cargo build --target` + 系统交叉编译工具链（不用 `cross`/Docker，因项目无 native C 依赖，且 build.rs 需访问 `../frontend`）
-  - 交叉编译工具链：Linux x86_64-musl 用 `musl-tools`（apt），aarch64-gnu 用 `gcc-aarch64-linux-gnu`（apt），aarch64-musl 用 musl.cc 工具链（wget）
+- **后端构建**（7 平台 matrix）：x86_64-musl / aarch64-gnu 用原生 `cargo build --target` + 系统交叉编译工具链，aarch64-musl 用 `cross` 预置 Docker 镜像（`actions-rs/cargo@v1` + `use-cross: true`）；build.rs 需访问 `../frontend`，预构建前端阶段已处理
+  - 交叉编译工具链：Linux x86_64-musl 用 `musl-tools`（apt），aarch64-gnu 用 `gcc-aarch64-linux-gnu`（apt），aarch64-musl 用 cross 预置 Docker 镜像（`actions-rs/cargo@v1` + `use-cross: true`）
   - 每个 job 先用 bun 预构建前端，build.rs 的 mtime 检查会跳过重复构建
   - 产物：`fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`
 - **固件构建**（单独 job）：arduino-cli 编译 ESP32-S3（`esp32:esp32:esp32s3:PSRAM=opi`）+ esptool 合并为单个 .bin（bootloader + partitions + app），可直接 `esptool write_flash 0x0` 烧录
