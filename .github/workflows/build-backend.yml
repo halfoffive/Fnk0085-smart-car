@@ -218,3 +218,34 @@ jobs:
           name: fnk0085-smart-car-firmware-${{ steps.meta.outputs.version }}
           path: firmware-out/fnk0085-smart-car-firmware-${{ steps.meta.outputs.version }}.bin
           retention-days: 30
+
+  # tag 推送时创建 GitHub prerelease，并上传 build 与 build-firmware 产物
+  release:
+    name: Create Prerelease
+    needs: [build, build-firmware]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: List downloaded assets
+        run: ls -R release-assets
+
+      - name: Create prerelease and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          mapfile -t assets < <(find release-assets -type f)
+          gh release create "$TAG" \
+            --prerelease \
+            --title "$TAG" \
+            --generate-notes \
+            "${assets[@]}"
