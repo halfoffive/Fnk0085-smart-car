@@ -70,8 +70,8 @@ pub async fn handle_post_control(
             return bad_request("内部序列化错误", accept_gzip);
         }
     };
-    if entry.try_push_command(json).is_err() {
-        log::warn!("设备 {device_id} 指令队列已满，control 被丢弃");
+    if entry.push_command(json) {
+        log::debug!("设备 {device_id} 丢弃最旧指令以插入新 control");
     }
 
     json_response(StatusCode::OK, &ControlResponse { ok: true }, accept_gzip)

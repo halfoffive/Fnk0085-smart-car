@@ -92,18 +92,14 @@ pub async fn handle_poll(
     };
     let timeout_s = parse_timeout(req.head().uri.query());
     // 同一设备同一时刻仅允许一个 poll 持锁，防止指令重复消费
-    let mut rx = entry.cmd_rx.lock().await;
-    let cmd_json = match tokio::time::timeout(Duration::from_secs(timeout_s), rx.recv()).await {
-        Ok(Some(json)) => json, // 拿到真实指令
-        Ok(None) => {
-            // 队列关闭（设备项被回收，理论上不会发生）
-            return json_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &serde_json::json!({"error": "command channel closed"}),
-                accept_gzip,
-            );
-        }
-        Err(_) => {
+    let _guard = entry.cmd_poll_lock.lock().await;
+    let cmd_json = match entry
+        .cmd_queue
+        .recv_timeout(Duration::from_secs(timeout_s))
+        .await
+    {
+        Some(json) => json, // 拿到真实指令
+        None => {
             // 超时：返回 Ping 占位，让设备立即重新发起 poll
             let ping = crate::protocol::DeviceCommand::Ping {
                 seq: 0,

@@ -93,8 +93,8 @@ pub async fn handle_post(
         ts: crate::device::now_ms(),
     };
     if let Ok(json) = serde_json::to_vec(&cmd) {
-        if entry.try_push_command(Bytes::from(json)).is_err() {
-            log::warn!("设备 {device_id} 指令队列已满，pwm_cache 被丢弃");
+        if entry.push_command(Bytes::from(json)) {
+            log::debug!("设备 {device_id} 丢弃最旧指令以插入新 pwm_cache");
         }
     }
 

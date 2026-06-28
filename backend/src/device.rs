@@ -8,12 +8,14 @@ use crate::video_cache::VideoCache;
 use dashmap::mapref::entry::Entry;
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::oneshot;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 /// 拍照完成回执
@@ -23,6 +25,58 @@ use tokio::time::Instant;
 pub struct PhotoResult {
     pub path: String,
     pub ok: bool,
+}
+
+/// 指令队列容量（覆盖旧指令策略）。
+const COMMAND_QUEUE_CAPACITY: usize = 16;
+
+/// 可覆盖的指令队列：满时丢弃最旧指令，保证新指令总能入队。
+pub struct CommandQueue {
+    cap: usize,
+    buf: std::sync::Mutex<VecDeque<bytes::Bytes>>,
+    notify: tokio::sync::Notify,
+}
+
+impl CommandQueue {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            buf: std::sync::Mutex::new(VecDeque::with_capacity(cap)),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// 推入指令。若队列已满，弹出最旧指令后再压入。
+    /// 返回 `true` 表示发生了丢弃。
+    pub fn push(&self, json: bytes::Bytes) -> bool {
+        let mut buf = self.buf.lock().unwrap();
+        let dropped = if buf.len() >= self.cap {
+            buf.pop_front();
+            true
+        } else {
+            false
+        };
+        buf.push_back(json);
+        drop(buf);
+        self.notify.notify_one();
+        dropped
+    }
+
+    /// 等待指令，超时返回 None。
+    pub async fn recv_timeout(&self, dur: Duration) -> Option<bytes::Bytes> {
+        loop {
+            {
+                let mut buf = self.buf.lock().unwrap();
+                if let Some(json) = buf.pop_front() {
+                    return Some(json);
+                }
+            }
+            match tokio::time::timeout(dur, self.notify.notified()).await {
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
 }
 
 /// 单设备运行态
@@ -44,10 +98,10 @@ pub struct DeviceEntry {
     pub right_rpm: AtomicI32,
     /// 等待中的拍照回执 oneshot（同一设备同时仅允许一个挂起拍照）
     pub photo_pending: Mutex<Option<oneshot::Sender<PhotoResult>>>,
-    /// 指令队列发送端（handlers 推入指令 JSON）
-    pub cmd_tx: mpsc::Sender<bytes::Bytes>,
-    /// 指令队列接收端（HTTPS 长轮询端点消费；同一设备同一时刻仅允许一个 poll 持锁）
-    pub cmd_rx: AsyncMutex<mpsc::Receiver<bytes::Bytes>>,
+    /// 可覆盖指令队列（handlers 推入，HTTPS 长轮询消费）
+    pub cmd_queue: Arc<CommandQueue>,
+    /// poll 端点互斥锁（同一设备同一时刻仅允许一个 poll 持锁，防止重复消费）
+    pub cmd_poll_lock: AsyncMutex<()>,
 }
 
 impl DeviceEntry {
@@ -58,7 +112,6 @@ impl DeviceEntry {
         video_max_bytes: usize,
         video_max_frame_bytes: usize,
     ) -> Arc<Self> {
-        let (cmd_tx, cmd_rx) = mpsc::channel(16);
         Arc::new(Self {
             device_id,
             online: AtomicBool::new(true),
@@ -74,8 +127,8 @@ impl DeviceEntry {
             left_rpm: AtomicI32::new(0),
             right_rpm: AtomicI32::new(0),
             photo_pending: Mutex::new(None),
-            cmd_tx,
-            cmd_rx: AsyncMutex::new(cmd_rx),
+            cmd_queue: Arc::new(CommandQueue::new(COMMAND_QUEUE_CAPACITY)),
+            cmd_poll_lock: AsyncMutex::new(()),
         })
     }
 
@@ -143,12 +196,9 @@ impl DeviceEntry {
         }
     }
 
-    /// 推入下行指令（非阻塞，队列满时返回错误由调用方记录丢弃）。
-    pub fn try_push_command(
-        &self,
-        json: bytes::Bytes,
-    ) -> Result<(), mpsc::error::TrySendError<bytes::Bytes>> {
-        self.cmd_tx.try_send(json)
+    /// 推入下行指令（队列满时自动覆盖最旧指令，返回是否发生丢弃）。
+    pub fn push_command(&self, json: bytes::Bytes) -> bool {
+        self.cmd_queue.push(json)
     }
 }
 
@@ -273,6 +323,7 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn get_or_create_basic() {
@@ -319,5 +370,72 @@ mod tests {
             let _ = h.join().unwrap();
         }
         assert!(reg.list().len() <= 8, "并发注册不应超过 max_devices=8 上限");
+    }
+
+    #[test]
+    fn command_queue_respects_capacity() {
+        let q = CommandQueue::new(2);
+        assert!(!q.push(Bytes::from_static(b"a")));
+        assert!(!q.push(Bytes::from_static(b"b")));
+        assert!(q.push(Bytes::from_static(b"c")));
+    }
+
+    #[test]
+    fn command_queue_drops_oldest_when_full() {
+        let q = CommandQueue::new(2);
+        q.push(Bytes::from_static(b"old"));
+        q.push(Bytes::from_static(b"mid"));
+        q.push(Bytes::from_static(b"new"));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let first = q.recv_timeout(Duration::from_millis(10)).await.unwrap();
+            assert_eq!(first, Bytes::from_static(b"mid"));
+            let second = q.recv_timeout(Duration::from_millis(10)).await.unwrap();
+            assert_eq!(second, Bytes::from_static(b"new"));
+        });
+    }
+
+    #[test]
+    fn command_queue_fifo_order() {
+        let q = CommandQueue::new(4);
+        q.push(Bytes::from_static(b"1"));
+        q.push(Bytes::from_static(b"2"));
+        q.push(Bytes::from_static(b"3"));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            assert_eq!(
+                q.recv_timeout(Duration::from_millis(10)).await.unwrap(),
+                Bytes::from_static(b"1")
+            );
+            assert_eq!(
+                q.recv_timeout(Duration::from_millis(10)).await.unwrap(),
+                Bytes::from_static(b"2")
+            );
+            assert_eq!(
+                q.recv_timeout(Duration::from_millis(10)).await.unwrap(),
+                Bytes::from_static(b"3")
+            );
+        });
+    }
+
+    #[test]
+    fn command_queue_recv_timeout_returns_none() {
+        let q = CommandQueue::new(2);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let res = q.recv_timeout(Duration::from_millis(50)).await;
+            assert!(res.is_none());
+        });
     }
 }
