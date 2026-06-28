@@ -4,7 +4,7 @@
 import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
 import { clientsClaim, setCacheNameDetails } from 'workbox-core';
 import { registerRoute } from 'workbox-routing';
-import { StaleWhileRevalidate, NetworkFirst } from 'workbox-strategies';
+import { StaleWhileRevalidate, NetworkFirst, NetworkOnly } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 
@@ -59,9 +59,18 @@ registerRoute(
   }),
 );
 
-// API（非流式）走 network-first，3s 超时回退缓存
+// POST 请求直接走网络，不缓存响应（控制/拍照等接口）
 registerRoute(
-  /\/api\/(devices|pwm_cache|control|photo)/,
+  ({ url, request }) =>
+    url.pathname.startsWith('/api/') && request.method === 'POST',
+  new NetworkOnly()
+);
+
+// API（非流式 GET）走 network-first，3s 超时回退缓存
+registerRoute(
+  ({ url, request }) =>
+    /\/api\/(devices|pwm_cache|control|photo)/.test(url.pathname) &&
+    request.method === 'GET',
   new NetworkFirst({
     cacheName: `${CACHE_PREFIX}-api`,
     networkTimeoutSeconds: 3,
