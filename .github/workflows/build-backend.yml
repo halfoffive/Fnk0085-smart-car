@@ -79,11 +79,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt_packages }}
 
-      # aarch64 musl 交叉编译器（musl.cc 预编译工具链）
+      # aarch64 musl 交叉编译器（more.musl.cc versioned 镜像，失败时回退 musl.cc）
       - name: Install aarch64 musl cross-compiler
         if: matrix.musl_cross == 'aarch64'
         run: |
-          wget -q https://musl.cc/aarch64-linux-musl-cross.tgz
+          WGET_OPTS="--tries=3 --timeout=60 --retry-connrefused -q"
+          URL_PRIMARY="https://more.musl.cc/11.2.1/x86_64-linux-musl/aarch64-linux-musl-cross.tgz"
+          URL_FALLBACK="https://musl.cc/aarch64-linux-musl-cross.tgz"
+
+          if ! wget $WGET_OPTS "$URL_PRIMARY"; then
+            echo "Primary toolchain source failed, trying fallback..."
+            wget $WGET_OPTS "$URL_FALLBACK" || { echo "Failed to download aarch64 musl toolchain from both sources"; exit 1; }
+          fi
           tar xzf aarch64-linux-musl-cross.tgz
           echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
 
