@@ -1,7 +1,7 @@
 name: Build Backend
 
 # 自动构建后端二进制：覆盖 Linux (gnu/musl × x86_64/aarch64)、Windows、macOS (Intel/ARM)
-# 构建产物上传至 S3，路径：s3://<bucket>/fnk0085-smart-car-backend/<version>/
+# 构建产物上传至 GitHub Actions artifacts
 # 版本号：tag 推送用 tag 名（如 v0.3.1），其他用 latest
 
 on:
@@ -141,28 +141,10 @@ jobs:
             tar czf "$GITHUB_WORKSPACE/${ARCHIVE}.tar.gz" fnk0085-smart-car-backend
           fi
 
-      # 始终上传 artifact，确保构建产物可下载（即使 S3 未配置）
+      # 上传构建产物至 GitHub Actions artifacts
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}
           path: fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ steps.meta.outputs.ext }}
           retention-days: 30
-
-      # S3 上传仅在所有 AWS secrets 均已配置时执行
-      - name: Configure AWS credentials
-        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_REGION != '' && secrets.S3_BUCKET != '' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Upload to S3
-        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_REGION != '' && secrets.S3_BUCKET != '' }}
-        shell: bash
-        run: |
-          aws s3 cp \
-            "fnk0085-smart-car-backend-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ steps.meta.outputs.ext }}" \
-            "s3://${{ secrets.S3_BUCKET }}/fnk0085-smart-car-backend/${{ steps.meta.outputs.version }}/" \
-            --no-progress
