@@ -31,9 +31,9 @@ pub async fn handle_get_stream(state: &AppState, device_id: &str) -> AppResponse
     };
 
     // 计算初始 latency（基于最新帧的 server_recv_ms）
-    let initial_latency = entry
-        .video
-        .latest()
+    let latest = entry.video.latest();
+    let initial_latency = latest
+        .as_ref()
         .map(|f| crate::device::now_ms().saturating_sub(f.server_recv_ms))
         .unwrap_or(0);
 
@@ -50,6 +50,9 @@ pub async fn handle_get_stream(state: &AppState, device_id: &str) -> AppResponse
         .insert_header(("Cache-Control", "no-store"))
         .insert_header(("Connection", "close"))
         .insert_header(("X-Latency-Ms", initial_latency.to_string()));
+    if let Some(uptime) = latest.as_ref().and_then(|f| f.device_uptime_ms) {
+        builder.insert_header(("X-Device-Uptime-Ms", uptime.to_string()));
+    }
 
     builder.body(BodyStream::new(stream)).map_into_boxed_body()
 }
@@ -72,7 +75,7 @@ fn frame_stream(
             match rx.recv().await {
                 Ok(frame) => {
                     let latency = crate::device::now_ms().saturating_sub(frame.server_recv_ms);
-                    let part = build_part(&frame.jpeg, latency);
+                    let part = build_part(&frame.jpeg, latency, frame.device_uptime_ms);
                     return Some((Ok(part), rx));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -89,9 +92,13 @@ fn frame_stream(
 }
 
 /// 构造单个 multipart part 字节
-fn build_part(jpeg: &Bytes, latency_ms: u64) -> Bytes {
-    let header =
-        format!("--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nX-Latency-Ms: {latency_ms}\r\n\r\n");
+fn build_part(jpeg: &Bytes, latency_ms: u64, device_uptime_ms: Option<u64>) -> Bytes {
+    let mut header =
+        format!("--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nX-Latency-Ms: {latency_ms}\r\n");
+    if let Some(uptime) = device_uptime_ms {
+        header.push_str(&format!("X-Device-Uptime-Ms: {uptime}\r\n"));
+    }
+    header.push_str("\r\n");
     let trailer = "\r\n";
     let mut out = Vec::with_capacity(header.len() + jpeg.len() + trailer.len());
     out.extend_from_slice(header.as_bytes());

@@ -10,6 +10,7 @@ use crate::state::AppState;
 use actix_http::StatusCode;
 use bytes::Bytes;
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 
 /// 登录请求体
 #[derive(Debug, Deserialize)]
@@ -23,7 +24,10 @@ pub async fn handle_login(state: &AppState, body: &Bytes, accept_gzip: bool) -> 
         Ok(v) => v,
         Err(e) => return bad_request(&format!("无效 JSON: {e}"), accept_gzip),
     };
-    if req.password == state.frontend_password.as_str() {
+    let provided = req.password.as_bytes();
+    let expected = state.frontend_password.as_bytes();
+    let equal = bool::from(ConstantTimeEq::ct_eq(provided, expected));
+    if equal {
         json_response(StatusCode::OK, &OkResponse { ok: true }, accept_gzip)
     } else {
         json_response(

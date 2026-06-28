@@ -36,8 +36,8 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 `.github/workflows/build-backend.yml` — GitHub Actions 自动构建后端二进制 + ESP32-S3 固件，产物上传至 GitHub Actions artifacts。
 
 - **触发**：push `master`（版本=`latest`）、push tag `v*`（版本=tag 名）、`workflow_dispatch` 手动触发
-- **后端构建**（7 平台 matrix）：x86_64-musl / aarch64-gnu 用原生 `cargo build --target` + 系统交叉编译工具链，aarch64-musl 用 `cross` 预置 Docker 镜像（`actions-rs/cargo@v1` + `use-cross: true`）；build.rs 需访问 `../frontend`，预构建前端阶段已处理
-  - 交叉编译工具链：Linux x86_64-musl 用 `musl-tools`（apt），aarch64-gnu 用 `gcc-aarch64-linux-gnu`（apt），aarch64-musl 用 cross 预置 Docker 镜像（`actions-rs/cargo@v1` + `use-cross: true`）
+- **后端构建**（7 平台 matrix）：x86_64-musl / aarch64-gnu 用原生 `cargo build --target` + 系统交叉编译工具链；aarch64-musl 用 pin 到 commit hash 的 `taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d` 安装 `cross` 后执行 `cross build --release --manifest-path backend/Cargo.toml --target aarch64-unknown-linux-musl`；不再使用已废弃的 `actions-rs/cargo@v1`。build.rs 需访问 `../frontend`，预构建前端阶段已处理
+  - 交叉编译工具链：Linux x86_64-musl 用 `musl-tools`（apt），aarch64-gnu 用 `gcc-aarch64-linux-gnu`（apt）
   - 每个 job 先用 bun 预构建前端，build.rs 的 mtime 检查会跳过重复构建
   - 产物：`fnk0085-smart-car-backend-<version>-<target>[.tar.gz|.zip]`
 - **固件构建**（单独 job）：arduino-cli 编译 ESP32-S3（`esp32:esp32:esp32s3:PSRAM=opi`）+ esptool 合并为单个 .bin（bootloader + partitions + app），可直接 `esptool write_flash 0x0` 烧录
@@ -97,6 +97,12 @@ bun run dev                # 仅开发预览，不更新后端内嵌产物
 - **拍照时串口报 `SCCB_Write Failed addr:0x30 ... ret:259` 且后端 504**：根因是 GPIO 引脚冲突（PIN_IN1=4 与 SIOD 冲突、PIN_IN2=5 与 SIOC 冲突、PIN_IN3=6 与 VSYNC 冲突、PIN_IN4=7 与 HREF 冲突、PIN_ENC_RIGHT=15 与 XCLK 冲突），`motorInit()` / `encoderInit()` 在 `cameraInit()` 之后执行把摄像头 GPIO 全部重路由掉。已修复：电机方向引脚重映射到 41/42/47/21，右编码器移到 GPIO 3（strapping pin，boot 后 INPUT_PULLUP 安全）。`photoMux` 二进制信号量仍保留作为 videoTask / handlePhoto 的并发保护（次要但合理）。拍照失败时设备上报 `DeviceEvent::Error`，后端立即触发 photo oneshot 释放，`/api/photo/{id}` 返回 HTTP 502 而非等满 8s 返回 504。
 - **前端视频画面无流**：检查串口是否周期打印 `[VIDEO] frames ok=%u fail=%u` 与 `[FRAME] POST failed ...`；`ok=0 fail=0` 表示 videoTask 未拿到帧（可能 photoInProgress 卡住或摄像头初始化失败）；`fail` 持续增加则检查后端 `/api/device/{id}/frame` 是否返回 401/404/413 或 scheme 是否匹配。
 - **忘记前端密码**：编辑运行目录下 `Fnk0085-smart-car-config.jsonc` 的 `auth.frontend_password` 字段后重启后端；若配置文件不存在，后端启动会自动写入默认值 `admin1234`。
+- **综合审查后 token 已脱敏**：固件 `printStoredConfig` / `[CFG]` 启动日志 / CONFIG 行回显均对 credential 显示为 `***`；串口日志中 grep `Serial.*token` 不再命中；如需确认 token 长度可查看 `[CFG] credential=*** (len=N)`。
+- **拍照互斥增加 5s 超时保护**：`handlePhoto()` 获取 `photoMux` 超时后会立即上报 `DeviceEvent::Error`，后端 `/api/photo/{id}` 返回 HTTP 502，不会阻塞 `loop()` 触发看门狗。
+- **遥测通道支持 TLS 回退与 WiFi 重连重置**：`telemetryTask` 首次 HTTPS POST 失败后回退到明文 `telemetryClient`；WiFi 断线事件 `ARDUINO_EVENT_WIFI_STA_DISCONNECTED` 触发 `resetNetworkClients()`，停止并重置所有网络客户端，同时复位 `httpsHandshakeFailed`。
+- **后端视频缓存有内存上限**：每设备 `VideoCache` 配置总字节上限与单帧大小上限，`push` 时按 LRU 丢弃旧帧，防止高分辨率/高码率场景下后端 OOM。
+- **后端登录使用恒定时间比较**：`auth.rs` 使用 `subtle::ConstantTimeEq` 比较密码，登录耗时不会泄露密码前缀信息。
+- **前端 Worker 正常处理取消**：切换设备或主动停止视频流产生的 `AbortError` 被 `videoWorker.ts` 识别为正常停止，不会 post error 导致界面报红。
 
 ## 协议改动清单
 

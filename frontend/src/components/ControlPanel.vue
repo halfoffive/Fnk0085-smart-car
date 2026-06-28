@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // 控制面板：WASD D-pad + 1-100 调速滑块 + 智能修正开关 + 拍照按钮 + 配网入口 + 轮速显示
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { useKeyboard } from '../composables/useKeyboard';
 import { getPwmCache, getTelemetry, postControl, postPwmCache, sliderToPwm } from '../lib/api';
 import { PWM_DEBOUNCE_MS, PWM_MAX, SLIDER_MAX, SLIDER_MIN } from '../lib/constants';
 import type { Direction, TelemetryState } from '../types/protocol';
@@ -13,6 +12,8 @@ const props = defineProps<{
   deviceId: string | null;
   /** 当前 PWM 值（受控） */
   pwm: number;
+  /** App.vue 全局键盘当前按下的方向（用于同步显示） */
+  keyboardActiveDir?: Direction | null;
 }>();
 
 const emit = defineEmits<{
@@ -24,7 +25,7 @@ const emit = defineEmits<{
   (e: 'photoError', msg: string): void;
 }>();
 
-const activeDir = ref<Direction | null>(null);
+const padActiveDir = ref<Direction | null>(null);
 const cacheEnabled = ref<boolean | null>(null);
 const cacheLoading = ref(false);
 const telemetry = ref<TelemetryState>({ leftRpm: 0, rightRpm: 0 });
@@ -46,7 +47,7 @@ watch(
 // 拉取 PWM 缓存状态 与 轮速
 watch(
   () => props.deviceId,
-  (id) => {
+  (id, _prev, onCleanup) => {
     if (!id) {
       cacheEnabled.value = null;
       telemetry.value = { leftRpm: 0, rightRpm: 0 };
@@ -81,9 +82,9 @@ watch(
     if (telemetryTimer) clearInterval(telemetryTimer);
     telemetryTimer = setInterval(refreshTelemetry, 500);
 
-    return () => {
+    onCleanup(() => {
       cancelled = true;
-    };
+    });
   },
   { immediate: true },
 );
@@ -93,7 +94,7 @@ const handlePress = async (dir: Direction) => {
   if (!props.deviceId) return;
   if (inFlight.has(dir)) return;
   inFlight.add(dir);
-  activeDir.value = dir;
+  padActiveDir.value = dir;
   try {
     await postControl(props.deviceId, { direction: dir, pwm: lastPwm });
   } catch {
@@ -105,7 +106,7 @@ const handlePress = async (dir: Direction) => {
 
 const handleRelease = async (dir: Direction) => {
   if (!props.deviceId) return;
-  if (activeDir.value === dir) activeDir.value = null;
+  if (padActiveDir.value === dir) padActiveDir.value = null;
   try {
     await postControl(props.deviceId, { direction: 'stop', pwm: 0 });
   } catch {
@@ -113,18 +114,15 @@ const handleRelease = async (dir: Direction) => {
   }
 };
 
-useKeyboard({
-  onPress: handlePress,
-  onRelease: handleRelease,
-  enabled: () => !!props.deviceId,
-});
+// 显示方向：优先取 App.vue 全局键盘状态，否则取 D-pad 本地状态
+const activeDir = computed<Direction | null>(() => props.keyboardActiveDir ?? padActiveDir.value);
 
 // D-pad 按钮
 const handlePadDown = (dir: Direction) => {
   void handlePress(dir);
 };
 const handlePadUp = () => {
-  void handleRelease(activeDir.value ?? 'stop');
+  void handleRelease(padActiveDir.value ?? 'stop');
 };
 
 // 滑块 debounce（仅同步显示，WASD 时才携带下发）

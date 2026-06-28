@@ -16,7 +16,12 @@ const DEFAULT_CONFIG_JSONC: &str = r#"{
   // Fnk0085 智能小车后端配置
   // TLS 已下沉到 nginx 反代，后端仅监听明文 HTTP。
   "http": { "host": "0.0.0.0", "port": 8080 },
-  "video": { "cache_seconds": 1, "max_devices": 32 },
+  "video": {
+    "cache_seconds": 1,
+    "max_devices": 32,
+    "max_bytes": 4194304,
+    "max_frame_bytes": 262144
+  },
   "auth": {
     "token": "change-me-please",
     "frontend_password": "admin1234"
@@ -32,6 +37,14 @@ pub struct HttpConfig {
     pub port: u16,
 }
 
+fn default_max_bytes() -> usize {
+    4 * 1024 * 1024
+}
+
+fn default_max_frame_bytes() -> usize {
+    256 * 1024
+}
+
 /// 视频缓存配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoConfig {
@@ -39,6 +52,12 @@ pub struct VideoConfig {
     pub cache_seconds: u32,
     /// 最大设备数（防止内存溢出）
     pub max_devices: u32,
+    /// 每设备视频缓存总字节上限
+    #[serde(default = "default_max_bytes")]
+    pub max_bytes: usize,
+    /// 单帧大小上限，超过直接丢弃
+    #[serde(default = "default_max_frame_bytes")]
+    pub max_frame_bytes: usize,
 }
 
 /// 鉴权配置（仅 token；TLS 由 nginx 反代处理）

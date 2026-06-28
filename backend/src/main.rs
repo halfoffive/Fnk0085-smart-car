@@ -50,6 +50,8 @@ async fn main() -> Result<()> {
         // 视频缓存参数：广播容量 16，最近帧保留 8（约 1s @ 8fps）
         16,
         8,
+        cfg.video.max_bytes,
+        cfg.video.max_frame_bytes,
     ));
 
     // 5. 共享状态

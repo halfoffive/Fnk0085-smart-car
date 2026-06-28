@@ -4,6 +4,31 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.3.1-audit-fix] - 2026-06-28
+
+本次为综合审查后的安全与稳定性修复批次，不升级三端 `package.json` / `Cargo.toml` 版本号，PWA 缓存键保持 `0.3.1`。
+
+### Security
+
+- 前端 Web Serial 配网日志对 `password`/`token` 字段脱敏，避免串口日志泄露敏感信息
+- 后端 `/api/auth/login` 使用 `subtle::ConstantTimeEq` 进行恒定时间密码比较，消除时序侧信道
+- 固件串口不再打印 token 明文：NVS 查询、`[CFG]` 启动日志、CONFIG 行回显均通过 `***` 掩码
+
+### Fixed
+
+- 固件 `handlePhoto()` 中 `photoMux` 获取超时改为 5000ms，超时路径调用 `sendError(5002, "photo mutex timeout")` 并立即返回，避免 videoTask 异常持锁导致 `loop()` 被阻塞触发看门狗
+- 前端 `useKeyboard` 仅在 `App.vue` 挂载一次；释放方向键时若还有其他方向键被按住不再发送 stop；窗口失焦/组件卸载时释放全部方向键
+- 后端 `DeviceRegistry::get_or_create` 修复 TOCTOU 竞态：通过 `DashMap::entry` + CAS 名额检查将存在性检查与插入合并为原子操作，并发注册测试不超过 `max_devices`
+- 后端 `VideoCache` 增加每设备总字节上限与单帧大小上限，超出时按 LRU 丢弃旧帧，防止高码流下 OOM
+- 后端延迟计算从 `SystemTime` 迁移到 `tokio::time::Instant`，`now_ms()` 以进程启动为基准单调递增，避免 NTP 回拨导致 `X-Latency-Ms` 异常
+- 后端 `/api/device/{id}/frame` 读取请求头 `X-Device-Uptime-Ms` 并写入 `Frame.device_uptime_ms`，视频流初始响应头与每帧 multipart part 头透传该字段
+- 固件 `telemetryTask` 首次 HTTPS POST 失败后回退到明文 `telemetryClient`，与 poll/video 通道行为一致；WiFi 断线重连后调用 `resetNetworkClients()` 停止并重置所有网络客户端，同时复位 `httpsHandshakeFailed`
+- 前端 `ControlPanel.vue` 的 `watch` 使用 `onCleanup` 注册清理函数；`VideoStream.vue` 使用响应式 `src` 绑定；`videoWorker.ts` 将 `AbortError` 识别为正常取消，切换设备/停止流时不再报红
+
+### Changed
+
+- `.github/workflows/build-backend.yml` 移除已废弃的 `actions-rs/cargo@v1`；`aarch64-unknown-linux-musl` 改用 pin 到 commit hash 的 `taiki-e/install-action` 安装 `cross` 后执行 `cross build`
+
 ## [0.3.1] - 2026-06-27
 
 ### Added

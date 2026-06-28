@@ -32,6 +32,7 @@ thiserror = "1"
 parking_lot = "0.12"
 dashmap = "6"
 futures = "0.3"
+subtle = "2"
 mime_guess = "2"
 
 [profile.release]

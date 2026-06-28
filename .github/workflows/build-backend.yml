@@ -103,13 +103,16 @@ jobs:
         working-directory: backend
         run: cargo build --release --target ${{ matrix.target }}
 
+      # 对 aarch64 musl 使用 pin 到 commit hash 的 cross 进行交叉编译，替代已废弃的 actions-rs/cargo@v1
+      - name: Install cross
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
+        with:
+          tool: cross
+
       - name: Build backend (cross)
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --release --manifest-path backend/Cargo.toml --target aarch64-unknown-linux-musl
+        run: cross build --release --manifest-path backend/Cargo.toml --target aarch64-unknown-linux-musl
 
       # 版本号：tag 推送用 tag 名，其他用 latest；同时确定产物扩展名
       - name: Extract version and archive extension

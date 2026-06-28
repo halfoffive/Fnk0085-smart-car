@@ -65,7 +65,10 @@ export function useKeyboard(opts: UseKeyboardOptions) {
     const next = new Set(pressed.value);
     next.delete(dir);
     pressed.value = next;
-    onRelease(dir);
+    // 只要还有其他方向键被按住，就不发送 stop
+    if (next.size === 0) {
+      onRelease(dir);
+    }
   };
 
   const handleBlur = () => {

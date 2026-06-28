@@ -5,14 +5,16 @@
 //! + 视频缓存句柄 + 拍照回执通道 + 指令队列（HTTPS 长轮询消费）。
 
 use crate::video_cache::VideoCache;
+use dashmap::mapref::entry::Entry;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
 /// 拍照完成回执
 /// - ok=true: 拍照成功，path 为 SD 上的 JPEG 路径
@@ -53,6 +55,8 @@ impl DeviceEntry {
         device_id: String,
         video_cache_capacity: usize,
         video_max_recent: usize,
+        video_max_bytes: usize,
+        video_max_frame_bytes: usize,
     ) -> Arc<Self> {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         Arc::new(Self {
@@ -60,7 +64,12 @@ impl DeviceEntry {
             online: AtomicBool::new(true),
             last_seen_ms: AtomicU64::new(now_ms()),
             addr: Mutex::new(None),
-            video: VideoCache::new(video_cache_capacity, video_max_recent),
+            video: VideoCache::new(
+                video_cache_capacity,
+                video_max_recent,
+                video_max_bytes,
+                video_max_frame_bytes,
+            ),
             pwm_cache_enabled: AtomicBool::new(true),
             left_rpm: AtomicI32::new(0),
             right_rpm: AtomicI32::new(0),
@@ -165,44 +174,70 @@ pub enum RegistryError {
 pub struct DeviceRegistry {
     inner: dashmap::DashMap<String, Arc<DeviceEntry>>,
     max_devices: u32,
+    /// 当前已创建设备数（上限控制，不减少）
+    device_count: AtomicUsize,
     /// 视频缓存配置（创建新设备时使用）
     video_capacity: usize,
     video_max_recent: usize,
+    video_max_bytes: usize,
+    video_max_frame_bytes: usize,
 }
 
 impl DeviceRegistry {
-    pub fn new(max_devices: u32, video_capacity: usize, video_max_recent: usize) -> Self {
+    pub fn new(
+        max_devices: u32,
+        video_capacity: usize,
+        video_max_recent: usize,
+        video_max_bytes: usize,
+        video_max_frame_bytes: usize,
+    ) -> Self {
         Self {
             inner: dashmap::DashMap::new(),
             max_devices,
+            device_count: AtomicUsize::new(0),
             video_capacity,
             video_max_recent,
+            video_max_bytes,
+            video_max_frame_bytes,
         }
     }
 
     /// 取或创建设备项（收到任何合法上行帧时调用）。
     /// 返回设备句柄；超过最大设备数时返回错误。
     pub fn get_or_create(&self, device_id: &str) -> Result<Arc<DeviceEntry>, RegistryError> {
-        if let Some(e) = self.inner.get(device_id) {
-            return Ok(e.clone());
+        match self.inner.entry(device_id.to_string()) {
+            Entry::Occupied(e) => Ok(e.get().clone()),
+            Entry::Vacant(e) => {
+                // CAS 循环申请一个设备名额；成功后再通过 entry 插入，
+                // 将“存在性检查 + 名额检查 + 插入”合并为一次 entry 原子操作。
+                loop {
+                    let current = self.device_count.load(Ordering::Relaxed);
+                    if current >= self.max_devices as usize {
+                        return Err(RegistryError::MaxDevicesExceeded {
+                            max: self.max_devices,
+                        });
+                    }
+                    match self.device_count.compare_exchange_weak(
+                        current,
+                        current + 1,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(_) => continue,
+                    }
+                }
+                let arc = DeviceEntry::new(
+                    device_id.to_string(),
+                    self.video_capacity,
+                    self.video_max_recent,
+                    self.video_max_bytes,
+                    self.video_max_frame_bytes,
+                );
+                e.insert(arc.clone());
+                Ok(arc)
+            }
         }
-        if self.inner.len() >= self.max_devices as usize && !self.inner.contains_key(device_id) {
-            return Err(RegistryError::MaxDevicesExceeded {
-                max: self.max_devices,
-            });
-        }
-        let entry = DeviceEntry::new(
-            device_id.to_string(),
-            self.video_capacity,
-            self.video_max_recent,
-        );
-        // entry().or_insert() 返回 &mut Reference，clone 后释放
-        let arc = self
-            .inner
-            .entry(device_id.to_string())
-            .or_insert(entry)
-            .clone();
-        Ok(arc)
     }
 
     pub fn get(&self, device_id: &str) -> Option<Arc<DeviceEntry>> {
@@ -226,13 +261,13 @@ impl DeviceRegistry {
     }
 }
 
-/// 当前 wall-clock 毫秒数
+/// 服务启动时刻（进程生命周期内只初始化一次）
+static START_TIME: OnceLock<Instant> = OnceLock::new();
+
+/// 当前单调毫秒数（以进程启动为基准，避免 NTP 回拨影响延迟计算）。
 pub fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    let start = START_TIME.get_or_init(Instant::now);
+    Instant::now().duration_since(*start).as_millis() as u64
 }
 
 #[cfg(test)]
@@ -241,7 +276,7 @@ mod tests {
 
     #[test]
     fn get_or_create_basic() {
-        let reg = DeviceRegistry::new(8, 8, 4);
+        let reg = DeviceRegistry::new(8, 8, 4, 1024, 256);
         let a = reg.get_or_create("dev1").unwrap();
         let b = reg.get_or_create("dev1").unwrap();
         assert!(Arc::ptr_eq(&a, &b));
@@ -252,7 +287,7 @@ mod tests {
 
     #[test]
     fn enforces_max_devices() {
-        let reg = DeviceRegistry::new(1, 8, 4);
+        let reg = DeviceRegistry::new(1, 8, 4, 1024, 256);
         let _ = reg.get_or_create("dev1").unwrap();
         let res = reg.get_or_create("dev2");
         assert!(matches!(
@@ -263,10 +298,26 @@ mod tests {
 
     #[test]
     fn photo_pending_is_one_shot() {
-        let entry = DeviceEntry::new("dev1".into(), 8, 4);
+        let entry = DeviceEntry::new("dev1".into(), 8, 4, 1024, 256);
         let (tx1, _rx1) = oneshot::channel();
         let (tx2, _rx2) = oneshot::channel();
         assert!(entry.await_photo(tx1));
         assert!(!entry.await_photo(tx2));
+    }
+
+    #[test]
+    fn concurrent_get_or_create_respects_max_devices() {
+        let reg = Arc::new(DeviceRegistry::new(8, 8, 4, 1024, 256));
+        let mut handles = Vec::new();
+        for i in 0..100 {
+            let reg = reg.clone();
+            handles.push(std::thread::spawn(move || {
+                reg.get_or_create(&format!("dev{i}"))
+            }));
+        }
+        for h in handles {
+            let _ = h.join().unwrap();
+        }
+        assert!(reg.list().len() <= 8, "并发注册不应超过 max_devices=8 上限");
     }
 }

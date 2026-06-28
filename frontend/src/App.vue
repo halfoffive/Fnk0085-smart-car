@@ -8,7 +8,8 @@ import ConfigDialog from './components/ConfigDialog.vue';
 import LoginView from './components/LoginView.vue';
 import { useKeyboard } from './composables/useKeyboard';
 import { useDevices } from './composables/useDevices';
-import { pwmToSlider, sliderToPwm } from './lib/api';
+import { postControl, pwmToSlider, sliderToPwm } from './lib/api';
+import type { Direction } from './types/protocol';
 import { isAuthed, clearAuthed } from './lib/auth';
 import { APP_VERSION, PWM_MAX } from './lib/constants';
 import { registerSW } from 'virtual:pwa-register';
@@ -25,6 +26,7 @@ const selectedDevice = ref<string | null>(null);
 const pwm = ref<number>(sliderToPwm(50));
 const configOpen = ref(false);
 const photoPending = ref(false);
+const keyboardActiveDir = ref<Direction | null>(null);
 const toasts = ref<Toast[]>([]);
 let toastId = 0;
 
@@ -95,10 +97,35 @@ function handleSpeedDelta(delta: number) {
   handlePwmChange(sliderToPwm(nextSlider));
 }
 
-// 全局监听速度键（上下方向键），仅在选中设备时生效
+// 全局键盘：WASD 遥控 + 上下箭头调速，仅在选中设备时生效
+const keyboardInFlight = new Set<Direction>();
+async function handleKeyPress(dir: Direction) {
+  const id = selectedDevice.value;
+  if (!id || keyboardInFlight.has(dir)) return;
+  keyboardActiveDir.value = dir;
+  keyboardInFlight.add(dir);
+  try {
+    await postControl(id, { direction: dir, pwm: pwm.value });
+  } catch {
+    // 静默失败
+  } finally {
+    keyboardInFlight.delete(dir);
+  }
+}
+async function handleKeyRelease(_dir: Direction) {
+  const id = selectedDevice.value;
+  if (!id) return;
+  keyboardActiveDir.value = null;
+  try {
+    await postControl(id, { direction: 'stop', pwm: 0 });
+  } catch {
+    // ignore
+  }
+}
+
 useKeyboard({
-  onPress: () => {},
-  onRelease: () => {},
+  onPress: handleKeyPress,
+  onRelease: handleKeyRelease,
   enabled: () => !!selectedDevice.value,
   onSpeedDelta: handleSpeedDelta,
 });
@@ -226,6 +253,7 @@ const toastIcon = (kind: ToastKind) => (kind === 'success' ? '✓' : kind === 'e
           <ControlPanel
             :device-id="selectedDevice"
             :pwm="pwm"
+            :keyboard-active-dir="keyboardActiveDir"
             @pwm-change="handlePwmChange"
             @open-config="configOpen = true"
             @photo-before="photoPending = true"

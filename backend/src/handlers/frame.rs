@@ -13,7 +13,7 @@ use crate::handlers::device_api::check_auth;
 use crate::handlers::{bad_request, device_not_found, json_response, read_body, AppResponse};
 use crate::state::AppState;
 use crate::video_cache::Frame;
-use actix_http::{Request, StatusCode};
+use actix_http::{HttpMessage, Request, StatusCode};
 use bytes::Bytes;
 
 /// 处理 POST /api/device/{deviceId}/frame
@@ -42,11 +42,18 @@ pub async fn handle_frame(
         Ok(b) => b,
         Err(e) => return bad_request(&format!("读取请求体失败: {e}"), accept_gzip),
     };
+    // 读取设备运行时间头（可选，用于延迟计算与透传）
+    let device_uptime_ms = req
+        .headers()
+        .get("X-Device-Uptime-Ms")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
     // 视为心跳：10fps 帧上传会持续刷新 last_seen，使设备保持 online
     let recv_ms = now_ms();
     entry.touch(None, recv_ms);
     entry.video.push(Frame {
         server_recv_ms: recv_ms,
+        device_uptime_ms,
         jpeg: body,
     });
     // 204 No Content：设备仅关心状态码，不需要 body

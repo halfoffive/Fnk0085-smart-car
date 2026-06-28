@@ -248,6 +248,8 @@ void sendTelemetry(uint32_t leftRpm, uint32_t rightRpm);
 void pollTask(void* arg);
 void telemetryTask(void* arg);
 void dispatchCommands();
+void resetNetworkClients();
+void onWifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 
 // 指令处理器
 void handleControl(const JsonDocument& doc);
@@ -558,6 +560,26 @@ void logTlsAndHttpError(HTTPClient& http, int code, const char* tag, WiFiClientS
   Serial.printf("[HTTP] %s error=%d %s\n", tag, code, http.errorToString(code).c_str());
 }
 
+// WiFi 断线后停止并重置所有网络客户端，防止旧 TLS/HTTP 状态在重连后继续失败
+void resetNetworkClients() {
+  telemetrySecureClient.stop();
+  telemetryClient.stop();
+  pollSecureClient.stop();
+  pollClient.stop();
+  videoSecureClient.stop();
+  videoClient.stop();
+  httpsClient.stop();
+}
+
+// WiFi 断开事件回调：重置客户端并清除 TLS 回退标记，允许重连后重新探测 HTTPS
+void onWifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) {
+  (void)event;
+  (void)info;
+  Serial.println("[WIFI] disconnected event, reset network clients");
+  resetNetworkClients();
+  setHandshakeFailed(false);
+}
+
 // 探测后端 /api/health 端点可用性（启动时 scheme 检测，2s 超时）
 // useTls=true 用 httpsClient，false 用 plainClient；返回 HTTP 状态码（200 成功，<0 网络/握手错误）
 // 静默执行（不调用 logTlsAndHttpError），失败时仅返回 code 由调用方决策
@@ -859,8 +881,8 @@ void sendTelemetry(uint32_t leftRpm, uint32_t rightRpm) {
 
 // telemetryTask：100ms 周期上报轮速遥测（独立客户端，不阻塞 loop）
 // core 0：与 pollTask 同核，WiFi 协议栈也在 core 0，避免跨核射频竞争
-// 使用独立 telemetrySecureClient / telemetryClient，不走 httpsMutex，
-// 避免 loop() 的 dispatchCommands() 被 100-300ms 同步 POST 阻塞导致 WASD 指令延时
+// 使用独立 telemetrySecureClient / telemetryClient，不走 httpsMutex；
+// 首次 HTTPS POST 失败时回退到明文 telemetryClient，与 pollTask/videoTask 行为一致
 void telemetryTask(void* arg) {
   Serial.println("[TASK] telem started");
   TickType_t lastWake = xTaskGetTickCount();
@@ -880,12 +902,12 @@ void telemetryTask(void* arg) {
     String body;
     serializeJson(doc, body);
 
-    String url = "/api/device/" + deviceId + "/event";
+    String path = "/api/device/" + deviceId + "/event";
+    String fullUrl = buildUrl(path);
 
-    // 使用独立客户端 POST，不走 httpsMutex；URL 构造复用 buildUrl（与 httpsPost 一致）
+    // 使用独立客户端 POST，不走 httpsMutex
     HTTPClient http;
     bool useTls = useHttps && !isHandshakeFailed();
-    String fullUrl = buildUrl(url);
     bool ok = useTls ? http.begin(telemetrySecureClient, fullUrl) : http.begin(telemetryClient, fullUrl);
     if (!ok) {
       Serial.println("[NET] telemetry begin failed");
@@ -895,6 +917,27 @@ void telemetryTask(void* arg) {
     http.addHeader("Authorization", "Bearer " + deviceToken);
     http.addHeader("Content-Type", "application/json");
     int code = http.POST(body);
+    if (code == -1 && useTls) {
+      // TLS 握手失败：打印诊断日志、置 sticky 标记、清理失败客户端、回退明文重试一次
+      logTlsAndHttpError(http, code, "TELEMETRY", &telemetrySecureClient);
+      setHandshakeFailed(true);
+      http.end();
+      telemetrySecureClient.stop();
+      HTTPClient http2;
+      if (!http2.begin(telemetryClient, fullUrl)) {
+        Serial.println("[NET] telemetry retry begin failed");
+        continue;
+      }
+      http2.setTimeout(2000);
+      http2.addHeader("Authorization", "Bearer " + deviceToken);
+      http2.addHeader("Content-Type", "application/json");
+      int retryCode = http2.POST(body);
+      http2.end();
+      if (retryCode != 200) {
+        Serial.printf("[NET] telemetry failed code=%d\n", retryCode);
+      }
+      continue;
+    }
     http.end();
     if (code != 200) {
       Serial.printf("[NET] telemetry failed code=%d\n", code);
@@ -1075,9 +1118,9 @@ void handlePhoto() {
     return;
   }
 
-  // 1. 获取拍照独占权（阻塞等待 videoTask 释放当前帧）
-  if (xSemaphoreTake(photoMux, portMAX_DELAY) != pdPASS) {
-    sendError(5002, "photo mutex take failed");
+  // 1. 获取拍照独占权（最多等待 5s，避免 videoTask 异常持锁阻塞 loop() 触发看门狗）
+  if (xSemaphoreTake(photoMux, pdMS_TO_TICKS(5000)) != pdPASS) {
+    sendError(5002, "photo mutex timeout");
     return;
   }
   photoInProgress = true;
@@ -1172,6 +1215,16 @@ String stripServerScheme(const String& server, bool& outUseHttps) {
   return server;
 }
 
+// 对 CONFIG 行中的 token 值做掩码，避免串口日志泄露敏感信息
+String maskTokenInConfigLine(const String& line) {
+  int idx = line.indexOf("token=");
+  if (idx < 0) return line;
+  int start = idx + 6;  // 跳过 "token="
+  int end = line.indexOf('|', start);
+  if (end < 0) end = line.length();
+  return line.substring(0, start) + "***" + line.substring(end);
+}
+
 // 解析 CONFIG|ssid=<ssid>|password=<pwd>|server=<host:port>|token=<token>\n
 bool parseConfigLine(const String& line, String& ssid, String& password,
                      String& server, String& token) {
@@ -1232,7 +1285,7 @@ void printStoredConfig() {
   Serial.printf("       ssid    = %s\n", ssid.c_str());
   Serial.printf("       password len = %d\n", password.length());
   Serial.printf("       server  = %s\n", server.c_str());
-  Serial.printf("       token   = %s\n", token.c_str());
+  Serial.printf("       auth    = %s\n", "***");
   Serial.println("==================================================");
 }
 
@@ -1243,7 +1296,7 @@ void pollSerialConfig() {
     char c = Serial.read();
     if (c == '\n') {
       if (line.startsWith("CONFIG|")) {
-        Serial.printf("[CFG] recv: %s\n", line.c_str());
+        Serial.printf("[CFG] recv: %s\n", maskTokenInConfigLine(line).c_str());
         String ssid, password, server, token;
         if (parseConfigLine(line, ssid, password, server, token)) {
           // 剥离 scheme 前缀后再校验 host:port（兼容 http:// https:// 与无 scheme）
@@ -1268,7 +1321,7 @@ void pollSerialConfig() {
             }
           }
         } else {
-          Serial.println("ERR|invalid_format (need ssid|password|server|token)");
+          Serial.println("ERR|invalid_format");
         }
       } else if (line == "CONFIG") {
         // 查询命令：打印当前 NVS 配置（含 token）
@@ -1333,7 +1386,9 @@ void setup() {
   String ssid, password, server, token;
   if (!loadConfigFromNVS(ssid, password, server, token)) {
     Serial.println("[CFG] NVS empty, waiting for Web Serial provisioning...");
-    Serial.println("      Send: CONFIG|ssid=<ssid>|password=<pwd>|server=<host:port>|token=<token>\\n");
+    String example = "      Send: CONFIG|ssid=<ssid>|password=<pwd>|server=<host:port>|";
+    example += "token=<token>\\n";
+    Serial.println(example);
     while (true) {
       pollSerialConfig();
       delay(10);
@@ -1359,11 +1414,13 @@ void setup() {
   Serial.printf("[Config] scheme=%s host=%s port=%u\n",
                 useHttps ? "https" : "http",
                 backendHost.c_str(), backendPort);
-  Serial.printf("[CFG] token=%s (len=%d)\n", deviceToken.c_str(), deviceToken.length());
+  Serial.printf("[CFG] credential=%s (len=%d)\n", "***", deviceToken.length());
 
   // 2.11 WiFi STA
   Serial.printf("[WIFI] connecting to %s\n", ssid.c_str());
   WiFi.mode(WIFI_STA);
+  // 注册 WiFi 断线事件回调，重置客户端与 TLS 状态
+  WiFi.onEvent(onWifiDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   // WiFi.config：5 参数版（local_ip + gateway + subnet + dns1 + dns2）
   // 前 3 项设 INADDR_NONE 表示由 DHCP 自动获取 IP/Gateway/Subnet，
   // 仅显式指定 DNS1=119.29.29.29（DNSPod）+ DNS2=8.8.8.8（Google），

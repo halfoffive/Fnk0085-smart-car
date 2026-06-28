@@ -127,12 +127,12 @@ bun run dev        # 开发模式
 | `/api/telemetry/{deviceId}` | GET | 无 | 设备左右轮速，返回 `{"leftRpm":..., "rightRpm":...}`；设备不在线返回 404 |
 | `/api/control/{deviceId}` | POST | 无 | 下发控制指令 `{direction, pwm}` |
 | `/api/photo/{deviceId}` | POST | 无 | 触发拍照，返回 `{path}`；设备侧失败返回 502 Bad Gateway（error 事件触发），超时返回 504 |
-| `/api/stream/{deviceId}` | GET | 无 | `multipart/x-mixed-replace` 视频流 |
+| `/api/stream/{deviceId}` | GET | 无 | `multipart/x-mixed-replace` 视频流；初始响应头与每帧 part 头携带 `X-Latency-Ms`（端到端延迟）与 `X-Device-Uptime-Ms`（设备运行时间） |
 | `/api/pwm_cache/{deviceId}` | GET/POST | 无 | 查询/设置 PWM 缓存开关 |
 | `/api/device/{deviceId}/register` | POST | body `token` | 设备控制通道注册 |
 | `/api/device/{deviceId}/poll` | GET | `Authorization: Bearer <token>` | 设备长轮询拉取指令 |
 | `/api/device/{deviceId}/event` | POST | `Authorization: Bearer <token>` | 设备上报事件（`photo_done` / `ack` / `error` / `telemetry`） |
-| `/api/device/{deviceId}/frame` | POST | `Authorization: Bearer <token>` | 设备上传单帧 JPEG |
+| `/api/device/{deviceId}/frame` | POST | `Authorization: Bearer <token>`、`Content-Type: image/jpeg`、`X-Device-Uptime-Ms` | 设备上传单帧 JPEG；后端将设备运行时间透传至视频流 |
 
 > 生产环境建议由 nginx 反代统一提供 TLS + HTTP/3；上述 `/api/config` 暴露 token，请确保仅在受信内网使用。
 

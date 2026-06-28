@@ -32,6 +32,12 @@ self.addEventListener('message', (e: MessageEvent<WorkerCommand>) => {
       paused = false;
       frameSeq = 0;
       startStream(msg.deviceId, msg.apiBase).catch((err: unknown) => {
+        const e = err as Error;
+        // 主动停止/切换设备导致的 AbortError 视为正常取消，不报错误
+        if (e.name === 'AbortError') {
+          post({ type: 'status', state: 'stopped' });
+          return;
+        }
         post({ type: 'error', message: `stream failed: ${String(err)}` });
       });
       break;

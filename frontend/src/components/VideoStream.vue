@@ -14,6 +14,7 @@ const props = defineProps<{
 type StreamState = 'idle' | 'connecting' | 'streaming' | 'stopped' | 'error';
 
 const imgRef = ref<HTMLImageElement | null>(null);
+const src = ref<string>('');
 const state = ref<StreamState>('idle');
 const latencyMs = ref<number>(0);
 const frameSeq = ref<number>(0);
@@ -36,7 +37,7 @@ function onMessage(e: MessageEvent<WorkerMessage>) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       const url = URL.createObjectURL(msg.blob);
       objectUrl = url;
-      if (imgRef.value) imgRef.value.src = url;
+      src.value = url;
       latencyMs.value = msg.latencyMs;
       frameSeq.value = msg.frameSeq;
       state.value = 'streaming';
@@ -78,6 +79,7 @@ watch(
       URL.revokeObjectURL(objectUrl);
       objectUrl = null;
     }
+    src.value = '';
 
     if (!id) {
       state.value = 'idle';
@@ -128,6 +130,7 @@ onBeforeUnmount(() => {
     URL.revokeObjectURL(objectUrl);
     objectUrl = null;
   }
+  src.value = '';
 });
 
 const showSkeleton = computed(
@@ -179,6 +182,7 @@ const frameSeqText = computed(() => frameSeq.value.toString().padStart(6, '0'));
     <!-- 视频帧 -->
     <img
       ref="imgRef"
+      :src="src"
       alt=""
       :class="[
         'absolute inset-0 w-full h-full object-contain transition-opacity duration-150',

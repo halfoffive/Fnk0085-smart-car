@@ -166,13 +166,14 @@ export function useWebSerial(): UseWebSerialResult {
       // 2. 启动读取循环（异步收集响应）
       const responsePromise = readUntilReboot(p);
 
-      // 3. 发送配网命令
+      // 3. 发送配网命令（日志脱敏，避免暴露 password/token）
       if (!p.writable) throw new Error('串口不可写');
       writer = p.writable.getWriter();
-      const cmd = `CONFIG|ssid=${payload.ssid}|password=${payload.password}|server=${payload.server}|token=${payload.token}\n`;
-      const data = new TextEncoder().encode(cmd);
+      const realCmd = `CONFIG|ssid=${payload.ssid}|password=${payload.password}|server=${payload.server}|token=${payload.token}\n`;
+      const maskedCmd = `CONFIG|ssid=${payload.ssid}|password=***|server=${payload.server}|token=***`;
+      const data = new TextEncoder().encode(realCmd);
       await writer.write(data);
-      pushLog(`已发送：${cmd.trim()}`);
+      pushLog(`已发送：${maskedCmd}`);
       await writer.close();
       writer = null;
 
